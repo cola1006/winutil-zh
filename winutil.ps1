@@ -5755,6 +5755,10 @@ function Invoke-WPFSelectedCheckboxesUpdate ($type, $checkboxName) {
     } else {
         $sync.$listName.Remove($checkboxName)
     }
+
+    if ($listName -eq 'selectedApps' -and $sync.WPFselectedAppsButton) {
+        $sync.WPFselectedAppsButton.Content = "已選軟體: $($sync.selectedApps.Count)"
+    }
 }
 
 function Invoke-WPFSSHServer {
