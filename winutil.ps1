@@ -5732,7 +5732,7 @@ public static class WinUtilRunspaceCleanup
     $cleanupState = [WinUtilRunspaceCleanupState]::new()
     $cleanupState.PowerShell = $powershell
     $cleanupState.Handle = $handle
-    $cleanupCallback = [System.Threading.WaitOrTimerCallback][WinUtilRunspaceCleanup]::Cleanup
+    $cleanupCallback = [System.Delegate]::CreateDelegate([System.Threading.WaitOrTimerCallback], [WinUtilRunspaceCleanup], "Cleanup")
     [System.Threading.ThreadPool]::RegisterWaitForSingleObject($handle.AsyncWaitHandle, $cleanupCallback, $cleanupState, -1, $true) | Out-Null
 
     # Return the handle
