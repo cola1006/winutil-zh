@@ -96,6 +96,49 @@ def translate_pairs_file(path, pairs):
     return applied, miss
 
 
+def apply_theme_overrides(root):
+    """Overwrite numeric width resources in config/themes.json for the zh build.
+
+    themes.json is an upstream (non-translated) file. Chinese labels render wider
+    than English, so the default fixed widths clip some controls. Driven by
+    translate/theme-overrides.json (keys other than the leading '_' comment are
+    applied to EVERY theme object that already defines that key -- shared/Light/
+    Dark -- so it stays correct if upstream restructures).
+    """
+    ov_path = os.path.join(HERE, 'theme-overrides.json')
+    if not os.path.exists(ov_path):
+        print('  [theme] SKIP missing theme-overrides.json')
+        return 0
+    overrides = {k: v for k, v in load_json(ov_path).items() if not k.startswith('_')}
+    path = os.path.join(root, 'config', 'themes.json')
+    if not os.path.exists(path):
+        print('  [theme] SKIP missing config/themes.json')
+        return 0
+    data = load_json(path)
+    applied = 0
+
+    def walk(node):
+        nonlocal applied
+        if isinstance(node, dict):
+            for k in list(node.keys()):
+                if k in overrides:
+                    if str(node[k]) != str(overrides[k]):
+                        node[k] = overrides[k]
+                        applied += 1
+                else:
+                    walk(node[k])
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(data)
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    write_text_no_bom(path, text + '\n')
+    print(f'  [theme] applied {applied} width override(s): '
+          + ', '.join(f'{k}={v}' for k, v in overrides.items()))
+    return applied
+
+
 def translate_xaml(root):
     pairs = load_json(os.path.join(HERE, 'xaml-pairs.json'))
     path = os.path.join(root, 'xaml', 'inputXML.xaml')
@@ -144,6 +187,7 @@ def main():
     print(f'Applying translations to: {root}')
     print(f'  dict entries: {len(dict_map)}')
     translate_config(root, dict_map)
+    apply_theme_overrides(root)
     translate_xaml(root)
     translate_functions(root)
     print('Done.')

@@ -1,0 +1,5 @@
+{
+  "_comment": "Width resource overrides for zh build. Chinese labels are wider than English; the default fixed ButtonWidth (200) clips the DNS combobox longest item (AdGuard_Ads_Trackers_Malware_Adult ~220px). Widened to fit + comfortable margin for all CJK button/combobox labels. TabButtonWidth bumped for visual balance of the top nav tabs. Values are applied to every theme object in config/themes.json that contains the key.",
+  "ButtonWidth": "250",
+  "TabButtonWidth": "130"
+}
