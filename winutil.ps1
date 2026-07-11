@@ -942,6 +942,30 @@ function Initialize-InstallAppEntry {
             $borderElement.SetResourceReference([Windows.Controls.Control]::BackgroundProperty, "AppInstallUnselectedColor")
         })
 
+        $contentPanel = New-Object Windows.Controls.StackPanel
+        $contentPanel.Orientation = "Horizontal"
+        $contentPanel.VerticalAlignment = [Windows.VerticalAlignment]::Center
+
+        $icon = New-Object Windows.Controls.Grid
+        $icon.SetResourceReference([Windows.FrameworkElement]::WidthProperty, "AppEntryIconSize")
+        $icon.SetResourceReference([Windows.FrameworkElement]::HeightProperty, "AppEntryIconSize")
+        $icon.Margin = New-Object Windows.Thickness(0, 0, 8, 0)
+        $fallback = New-Object Windows.Controls.TextBlock
+        $fallback.Text = $Apps.$appKey.content.TrimStart(".").Substring(0, 1).ToUpper()
+        $fallback.FontWeight = "Bold"; $fallback.HorizontalAlignment = "Center"; $fallback.VerticalAlignment = "Center"
+        if ($Apps.$appKey.link) { $fallback.Visibility = "Collapsed" }
+        $fallback.SetResourceReference([Windows.Controls.TextBlock]::FontSizeProperty, "AppEntryFontSize")
+        $fallback.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, "ToggleButtonOnColor")
+        [void]$icon.Children.Add($fallback)
+        if ($Apps.$appKey.link) {
+            $logo = New-Object Windows.Controls.Image
+            $logo.Stretch = [Windows.Media.Stretch]::Uniform
+            $logo.Source = "https://www.google.com/s2/favicons?sz=64&domain_url=$([uri]::EscapeDataString($Apps.$appKey.link))"
+            $logo.Add_ImageFailed({ $this.Visibility = "Collapsed"; $this.Parent.Children[0].Visibility = "Visible" })
+            [void]$icon.Children.Add($logo)
+        }
+        [void]$contentPanel.Children.Add($icon)
+
         # Create the TextBlock for the application name
         $appName = New-Object Windows.Controls.TextBlock
         $appName.Style = $sync.Form.Resources.AppEntryNameStyle
@@ -955,7 +979,8 @@ function Initialize-InstallAppEntry {
 
             [void]$appName.Inlines.Add($fossRun)
         }
-        $checkBox.Content = $appName
+        [void]$contentPanel.Children.Add($appName)
+        $checkBox.Content = $contentPanel
 
         # Add accessibility properties to make the elements screen reader friendly
         $checkBox.SetValue([Windows.Automation.AutomationProperties]::NameProperty, $app.content)
@@ -9380,10 +9405,11 @@ $sync.configs.preset = @'
 $sync.configs.themes = @'
 {
   "shared": {
-    "AppEntryWidth": "200",
-    "AppEntryFontSize": "11",
-    "AppEntryMargin": "1,0,1,0",
-    "AppEntryBorderThickness": "0",
+    "AppEntryWidth": "220",
+    "AppEntryFontSize": "13.2",
+    "AppEntryIconSize": "28",
+    "AppEntryMargin": "3",
+    "AppEntryBorderThickness": "1",
     "CustomDialogFontSize": "12",
     "CustomDialogFontSizeHeader": "14",
     "CustomDialogLogoSize": "25",
@@ -11246,8 +11272,8 @@ $inputXML = @'
     <Style x:Key="AppEntryBorderStyle" TargetType="Border">
         <Setter Property="BorderBrush" Value="Gray"/>
         <Setter Property="BorderThickness" Value="{DynamicResource AppEntryBorderThickness}"/>
-        <Setter Property="CornerRadius" Value="2"/>
-        <Setter Property="Padding" Value="{DynamicResource AppEntryMargin}"/>
+        <Setter Property="CornerRadius" Value="5"/>
+        <Setter Property="Padding" Value="6,4"/>
         <Setter Property="Width" Value="{DynamicResource AppEntryWidth}"/>
         <Setter Property="VerticalAlignment" Value="Top"/>
         <Setter Property="Margin" Value="{DynamicResource AppEntryMargin}"/>
@@ -11262,30 +11288,9 @@ $inputXML = @'
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="CheckBox">
-                    <StackPanel Orientation="Horizontal">
-                        <Grid Width="16" Height="16" Margin="0,0,8,0">
-                            <Border Name="CheckBoxBorder"
-                                    BorderBrush="{DynamicResource MainForegroundColor}"
-                                    Background="{DynamicResource ButtonBackgroundColor}"
-                                    BorderThickness="1"
-                                    Width="12"
-                                    Height="12"
-                                    CornerRadius="2"/>
-                            <Path Name="CheckMark"
-                                  Stroke="{DynamicResource ToggleButtonOnColor}"
-                                  StrokeThickness="2"
-                                  Data="M 2 8 L 6 12 L 14 4"
-                                  Visibility="Collapsed"/>
-                        </Grid>
-                        <ContentPresenter Content="{TemplateBinding Content}"
-                                        VerticalAlignment="Center"
-                                        HorizontalAlignment="Left"/>
-                    </StackPanel>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
-                        </Trigger>
-                    </ControlTemplate.Triggers>
+                    <ContentPresenter Content="{TemplateBinding Content}"
+                                      VerticalAlignment="Center"
+                                      HorizontalAlignment="Left"/>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
