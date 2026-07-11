@@ -260,5 +260,14 @@
         "new": "        $msg = \"請勾選您要復原的調校項目。\"\n"
       }
     ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFSelectedCheckboxesUpdate.ps1",
+    "pairs": [
+      {
+        "old": "    } else {\n        $sync.$listName.Remove($checkboxName)\n    }\n}",
+        "new": "    } else {\n        $sync.$listName.Remove($checkboxName)\n    }\n\n    if ($listName -eq 'selectedApps' -and $sync.WPFselectedAppsButton) {\n        $sync.WPFselectedAppsButton.Content = \"已選軟體: $($sync.selectedApps.Count)\"\n    }\n}"
+      }
+    ]
   }
 ]
