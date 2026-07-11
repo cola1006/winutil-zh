@@ -269,5 +269,14 @@
         "new": "    } else {\n        $sync.$listName.Remove($checkboxName)\n    }\n\n    if ($listName -eq 'selectedApps' -and $sync.WPFselectedAppsButton) {\n        $sync.WPFselectedAppsButton.Content = \"已選軟體: $($sync.selectedApps.Count)\"\n    }\n}"
       }
     ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFRunspace.ps1",
+    "pairs": [
+      {
+        "old": "    $cleanupCallback = [System.Threading.WaitOrTimerCallback][WinUtilRunspaceCleanup]::Cleanup",
+        "new": "    $cleanupCallback = [System.Delegate]::CreateDelegate([System.Threading.WaitOrTimerCallback], [WinUtilRunspaceCleanup], \"Cleanup\")"
+      }
+    ]
   }
 ]
