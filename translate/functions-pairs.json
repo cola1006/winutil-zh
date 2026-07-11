@@ -1,0 +1,264 @@
+[
+  {
+    "file": "functions/private/Add-SelectedAppsMenuItem.ps1",
+    "pairs": [
+      {
+        "old": "    $selectedAppRemoveButton.ToolTip = \"Remove the App from Selection\"\n",
+        "new": "    $selectedAppRemoveButton.ToolTip = \"從選擇中移除此軟體\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/private/Invoke-WinUtilISO.ps1",
+    "pairs": [
+      {
+        "old": "        if ($current -eq \"Ready. Please select a Windows 11 ISO to begin.\") {\n",
+        "new": "        if ($current -eq \"已就緒。請選擇一個 Windows 11 ISO 以開始。\") {\n"
+      },
+      {
+        "old": "    $dlg.Title            = \"Select Windows 11 ISO\"\n    $dlg.Filter           = \"ISO files (*.iso)|*.iso|All files (*.*)|*.*\"\n",
+        "new": "    $dlg.Title            = \"選擇 Windows 11 ISO\"\n    $dlg.Filter           = \"ISO 檔案 (*.iso)|*.iso|所有檔案 (*.*)|*.*\"\n"
+      },
+      {
+        "old": "    $sync[\"WPFWin11ISOFileInfo\"].Text       = \"File size: $fileSizeGB GB\"\n",
+        "new": "    $sync[\"WPFWin11ISOFileInfo\"].Text       = \"檔案大小: $fileSizeGB GB\"\n"
+      },
+      {
+        "old": "    if ([string]::IsNullOrWhiteSpace($isoPath) -or $isoPath -eq \"No ISO selected...\") {\n        [System.Windows.MessageBox]::Show(\"Please select an ISO file first.\", \"No ISO Selected\", \"OK\", \"Warning\")\n",
+        "new": "    if ([string]::IsNullOrWhiteSpace($isoPath) -or $isoPath -eq \"未選擇 ISO...\") {\n        [System.Windows.MessageBox]::Show(\"請先選擇一個 ISO 檔案。\", \"未選擇 ISO\", \"OK\", \"Warning\")\n"
+      },
+      {
+        "old": "                \"This does not appear to be a valid Windows ISO.`n`ninstall.wim / install.esd was not found.\",\n                \"Invalid ISO\", \"OK\", \"Error\")\n",
+        "new": "                \"這似乎不是有效的 Windows ISO。`n`n找不到 install.wim / install.esd。\",\n                \"無效的 ISO\", \"OK\", \"Error\")\n"
+      },
+      {
+        "old": "                \"No Windows 11 edition was found in this ISO.`n`nOnly official Windows 11 ISOs are supported.\",\n                \"Not a Windows 11 ISO\", \"OK\", \"Error\")\n",
+        "new": "                \"在此 ISO 中找不到任何 Windows 11 版本。`n`n僅支援官方的 Windows 11 ISO。\",\n                \"並非 Windows 11 ISO\", \"OK\", \"Error\")\n"
+      },
+      {
+        "old": "        $sync[\"WPFWin11ISOMountDriveLetter\"].Text = \"Mounted at: $driveLetter   |   Image file: $(Split-Path $activeWim -Leaf)\"\n",
+        "new": "        $sync[\"WPFWin11ISOMountDriveLetter\"].Text = \"掛載於: $driveLetter   |   映像檔: $(Split-Path $activeWim -Leaf)\"\n"
+      },
+      {
+        "old": "            \"An error occurred while mounting or verifying the ISO:`n`n$_\",\n            \"Error\", \"OK\", \"Error\")\n",
+        "new": "            \"掛載或驗證 ISO 時發生錯誤：`n`n$_\",\n            \"錯誤\", \"OK\", \"Error\")\n"
+      },
+      {
+        "old": "            \"No verified ISO found. Please complete Steps 1 and 2 first.\",\n            \"Not Ready\", \"OK\", \"Warning\")\n",
+        "new": "            \"找不到已驗證的 ISO。請先完成步驟 1 和步驟 2。\",\n            \"尚未就緒\", \"OK\", \"Warning\")\n"
+      },
+      {
+        "old": "                    \"An error occurred during install.wim modification:`n`n$_\",\n                    \"Modification Error\", \"OK\", \"Error\")\n",
+        "new": "                    \"修改 install.wim 時發生錯誤：`n`n$_\",\n                    \"修改錯誤\", \"OK\", \"Error\")\n"
+      },
+      {
+        "old": "        \"A previous WinUtil ISO working directory was found:`n`n$($existingWorkDir.FullName)`n`n(Last modified: $modified)`n`nStep 4 (output options) has been restored so you can save the already-modified image.`n`nClick 'Clean & Reset' in Step 4 if you want to start over.\",\n        \"Existing Work Found\", \"OK\", \"Info\")\n",
+        "new": "        \"找到先前的 WinUtil ISO 工作目錄：`n`n$($existingWorkDir.FullName)`n`n(最後修改時間: $modified)`n`n已還原步驟 4（輸出選項），您可以儲存已修改的映像。`n`n若要重新開始，請點選步驟 4 中的「清除並重設」。\",\n        \"找到既有的工作進度\", \"OK\", \"Info\")\n"
+      },
+      {
+        "old": "            \"This will delete the temporary working directory:`n`n$workDir`n`nAnd reset the interface back to the start.`n`nContinue?\",\n            \"Clean & Reset\", \"YesNo\", \"Warning\")\n",
+        "new": "            \"這將刪除暫存工作目錄：`n`n$workDir`n`n並將介面重設回起始狀態。`n`n是否繼續？\",\n            \"清除並重設\", \"YesNo\", \"Warning\")\n"
+      },
+      {
+        "old": "                $sync[\"WPFWin11ISOPath\"].Text                   = \"No ISO selected...\"\n",
+        "new": "                $sync[\"WPFWin11ISOPath\"].Text                   = \"未選擇 ISO...\"\n"
+      },
+      {
+        "old": "                $sync[\"WPFWin11ISOStatusLog\"].Text   = \"Ready. Please select a Windows 11 ISO to begin.\"\n",
+        "new": "                $sync[\"WPFWin11ISOStatusLog\"].Text   = \"已就緒。請選擇一個 Windows 11 ISO 以開始。\"\n"
+      },
+      {
+        "old": "            \"No modified ISO content found.  Please complete Steps 1-3 first.\",\n            \"Not Ready\", \"OK\", \"Warning\")\n",
+        "new": "            \"找不到已修改的 ISO 內容。請先完成步驟 1 至 3。\",\n            \"尚未就緒\", \"OK\", \"Warning\")\n"
+      },
+      {
+        "old": "    $dlg.Title            = \"Save Modified Windows 11 ISO\"\n    $dlg.Filter           = \"ISO files (*.iso)|*.iso\"\n",
+        "new": "    $dlg.Title            = \"儲存已修改的 Windows 11 ISO\"\n    $dlg.Filter           = \"ISO 檔案 (*.iso)|*.iso\"\n"
+      },
+      {
+        "old": "                \"oscdimg.exe could not be found or installed automatically.`n`nPlease install it manually:`n  winget install -e --id Microsoft.OSCDIMG`n`nOr install the Windows ADK from:`nhttps://learn.microsoft.com/windows-hardware/get-started/adk-install\",\n                \"oscdimg Not Found\", \"OK\", \"Warning\")\n",
+        "new": "                \"找不到 oscdimg.exe，也無法自動安裝。`n`n請手動安裝：`n  winget install -e --id Microsoft.OSCDIMG`n`n或從以下網址安裝 Windows ADK：`nhttps://learn.microsoft.com/windows-hardware/get-started/adk-install\",\n                \"找不到 oscdimg\", \"OK\", \"Warning\")\n"
+      },
+      {
+        "old": "                    [System.Windows.MessageBox]::Show(\"ISO exported successfully!`n`n$outputISO\", \"Export Complete\", \"OK\", \"Info\")\n",
+        "new": "                    [System.Windows.MessageBox]::Show(\"ISO 匯出成功！`n`n$outputISO\", \"匯出完成\", \"OK\", \"Info\")\n"
+      },
+      {
+        "old": "                        \"oscdimg exited with code $($proc.ExitCode).`nCheck the status log for details.\",\n                        \"Export Error\", \"OK\", \"Error\")\n",
+        "new": "                        \"oscdimg 結束，代碼為 $($proc.ExitCode)。`n請查看狀態記錄以了解詳情。\",\n                        \"匯出錯誤\", \"OK\", \"Error\")\n"
+      },
+      {
+        "old": "                [System.Windows.MessageBox]::Show(\"ISO export failed:`n`n$_\", \"Error\", \"OK\", \"Error\")\n",
+        "new": "                [System.Windows.MessageBox]::Show(\"ISO 匯出失敗：`n`n$_\", \"錯誤\", \"OK\", \"Error\")\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/private/Invoke-WinUtilISOUSB.ps1",
+    "pairs": [
+      {
+        "old": "        $combo.Items.Add(\"No USB drives detected.\")\n",
+        "new": "        $combo.Items.Add(\"未偵測到 USB 磁碟。\")\n"
+      },
+      {
+        "old": "        [System.Windows.MessageBox]::Show(\"No modified ISO content found. Please complete Steps 1-3 first.\", \"Not Ready\", \"OK\", \"Warning\")\n",
+        "new": "        [System.Windows.MessageBox]::Show(\"找不到已修改的 ISO 內容。請先完成步驟 1 至 3。\", \"尚未就緒\", \"OK\", \"Warning\")\n"
+      },
+      {
+        "old": "        [System.Windows.MessageBox]::Show(\"Please select a USB drive from the dropdown.\", \"No Drive Selected\", \"OK\", \"Warning\")\n",
+        "new": "        [System.Windows.MessageBox]::Show(\"請從下拉選單中選擇一個 USB 磁碟。\", \"未選擇磁碟\", \"OK\", \"Warning\")\n"
+      },
+      {
+        "old": "        \"ALL data on Disk $diskNum ($($targetDisk.FriendlyName), $sizeGB GB) will be PERMANENTLY ERASED.`n`nAre you sure you want to continue?\",\n        \"Confirm USB Erase\", \"YesNo\", \"Warning\")\n",
+        "new": "        \"磁碟 $diskNum ($($targetDisk.FriendlyName), $sizeGB GB) 上的所有資料將被永久清除。`n`n您確定要繼續嗎？\",\n        \"確認清除 USB\", \"YesNo\", \"Warning\")\n"
+      },
+      {
+        "old": "                    \"USB drive created successfully!`n`nYou can now boot from this drive to install Windows 11.\",\n                    \"USB Ready\", \"OK\", \"Info\")\n",
+        "new": "                    \"USB 磁碟建立成功！`n`n您現在可以從此磁碟開機以安裝 Windows 11。\",\n                    \"USB 已就緒\", \"OK\", \"Info\")\n"
+      },
+      {
+        "old": "                [System.Windows.MessageBox]::Show(\"USB write failed:`n`n$_\", \"USB Write Error\", \"OK\", \"Error\")\n",
+        "new": "                [System.Windows.MessageBox]::Show(\"USB 寫入失敗：`n`n$_\", \"USB 寫入錯誤\", \"OK\", \"Error\")\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/private/Reset-WPFCheckBoxes.ps1",
+    "pairs": [
+      {
+        "old": "    $sync.WPFselectedAppsButton.Content = \"Selected Apps: $count\"\n",
+        "new": "    $sync.WPFselectedAppsButton.Content = \"已選軟體: $count\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFAppxRemoval.ps1",
+    "pairs": [
+      {
+        "old": "        Show-WinUtilMessage -Message \"No AppX Package selected\" -Title \"Error\" -Button \"OK\" -Icon \"Error\"\n",
+        "new": "        Show-WinUtilMessage -Message \"未選擇任何 AppX 套件\" -Title \"錯誤\" -Button \"OK\" -Icon \"Error\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFFeatureInstall.ps1",
+    "pairs": [
+      {
+        "old": "        $msg = \"[Invoke-WPFFeatureInstall] Install process is currently running.\"\n",
+        "new": "        $msg = \"[Invoke-WPFFeatureInstall] 目前有一個安裝程序正在執行中。\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFFixesUpdate.ps1",
+    "pairs": [
+      {
+        "old": "    $MessageboxTitle = \"Reset Windows Update \"\n    $Messageboxbody = (\"Stock settings loaded.`n Please reboot your computer\")\n",
+        "new": "    $MessageboxTitle = \"重設 Windows Update \"\n    $Messageboxbody = (\"已載入原廠設定。`n 請重新開機\")\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFGetInstalled.ps1",
+    "pairs": [
+      {
+        "old": "        $msg = \"[Invoke-WPFGetInstalled] Install process is currently running.\"\n",
+        "new": "        $msg = \"[Invoke-WPFGetInstalled] 目前有一個安裝程序正在執行中。\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFImpex.ps1",
+    "pairs": [
+      {
+        "old": "            $FileBrowser.Filter = \"JSON Files (*.json)|*.json\"\n",
+        "new": "            $FileBrowser.Filter = \"JSON 檔案 (*.json)|*.json\"\n"
+      },
+      {
+        "old": "                            \"No settings are selected to export. Please select at least one app, tweak, toggle, feature, or AppX package before exporting.\",\n                            \"Nothing to Export\", \"OK\", \"Warning\")\n",
+        "new": "                            \"沒有選擇任何要匯出的設定。匯出前，請至少選擇一個軟體、調校、開關、功能或 AppX 套件。\",\n                            \"沒有可匯出的項目\", \"OK\", \"Warning\")\n"
+      },
+      {
+        "old": "                            \"The selected file contains no settings to import. No changes have been made.\",\n                            \"Empty Configuration\", \"OK\", \"Warning\")\n",
+        "new": "                            \"所選檔案不含任何可匯入的設定。未做任何變更。\",\n                            \"空白設定檔\", \"OK\", \"Warning\")\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFInstall.ps1",
+    "pairs": [
+      {
+        "old": "        $msg = \"[Invoke-WPFInstall] An Install process is currently running.\"\n",
+        "new": "        $msg = \"[Invoke-WPFInstall] 目前有一個安裝程序正在執行中。\"\n"
+      },
+      {
+        "old": "        $WarningMsg = \"Please select the program(s) to install or upgrade.\"\n",
+        "new": "        $WarningMsg = \"請選擇要安裝或升級的程式。\"\n"
+      },
+      {
+        "old": "                Show-WPFInstallAppBusy -text \"Installing apps...\"\n",
+        "new": "                Show-WPFInstallAppBusy -text \"正在安裝應用程式...\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFUltimatePerformance.ps1",
+    "pairs": [
+      {
+        "old": "        [System.Windows.MessageBox]::Show(\"Ultimate Power Plan plan installed and activated.\",\"Success\",\"OK\",\"Information\")\n",
+        "new": "        [System.Windows.MessageBox]::Show(\"已安裝並啟用「極致效能」電源計劃。\",\"成功\",\"OK\",\"Information\")\n"
+      },
+      {
+        "old": "        [System.Windows.MessageBox]::Show(\"Power Plan was reset to defaults.\",\"Success\",\"OK\",\"Information\")\n",
+        "new": "        [System.Windows.MessageBox]::Show(\"電源計劃已重設為預設值。\",\"成功\",\"OK\",\"Information\")\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFUnInstall.ps1",
+    "pairs": [
+      {
+        "old": "        $msg = \"[Invoke-WPFUnInstall] Install process is currently running\"\n",
+        "new": "        $msg = \"[Invoke-WPFUnInstall] 目前有一個安裝程序正在執行中\"\n"
+      },
+      {
+        "old": "        $WarningMsg = \"Please select the program(s) to uninstall\"\n",
+        "new": "        $WarningMsg = \"請選擇要解除安裝的程式\"\n"
+      },
+      {
+        "old": "    $MessageboxTitle = \"Are you sure?\"\n    $Messageboxbody = (\"This will uninstall the following applications: `n $($PackagesToUninstall | Select-Object Name, Description| Out-String)\")\n",
+        "new": "    $MessageboxTitle = \"確定嗎？\"\n    $Messageboxbody = (\"此操作將解除安裝以下應用程式： `n $($PackagesToUninstall | Select-Object Name, Description| Out-String)\")\n"
+      },
+      {
+        "old": "            Show-WPFInstallAppBusy -text \"Uninstalling apps...\"\n",
+        "new": "            Show-WPFInstallAppBusy -text \"正在解除安裝應用程式...\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFtweaksbutton.ps1",
+    "pairs": [
+      {
+        "old": "    $msg = \"[Invoke-WPFtweaksbutton] Install process is currently running.\"\n",
+        "new": "    $msg = \"[Invoke-WPFtweaksbutton] 目前有一個安裝程序正在執行中。\"\n"
+      },
+      {
+        "old": "    $msg = \"Please check the tweaks you wish to perform.\"\n",
+        "new": "    $msg = \"請勾選您要執行的調校項目。\"\n"
+      }
+    ]
+  },
+  {
+    "file": "functions/public/Invoke-WPFundoall.ps1",
+    "pairs": [
+      {
+        "old": "        $msg = \"[Invoke-WPFundoall] Install process is currently running.\"\n",
+        "new": "        $msg = \"[Invoke-WPFundoall] 目前有一個安裝程序正在執行中。\"\n"
+      },
+      {
+        "old": "        $msg = \"Please check the tweaks you wish to undo.\"\n",
+        "new": "        $msg = \"請勾選您要復原的調校項目。\"\n"
+      }
+    ]
+  }
+]

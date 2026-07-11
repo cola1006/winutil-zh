@@ -1,0 +1,42 @@
+name: Build Chinese WinUtil
+on:
+  schedule:
+    - cron: '0 18 * * *'   # daily
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout translation repo
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream winutil
+        uses: actions/checkout@v4
+        with:
+          repository: ChrisTitusTech/winutil
+          path: upstream
+
+      - name: Apply Chinese translations
+        run: python translate/apply-translations.py --root upstream
+
+      - name: Compile winutil.ps1
+        shell: pwsh
+        run: |
+          cd upstream
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          ./Compile.ps1
+
+      - name: Copy artifact
+        shell: pwsh
+        run: Copy-Item upstream/winutil.ps1 winutil.ps1 -Force
+
+      - name: Commit if changed
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add winutil.ps1
+          git diff --cached --quiet || git commit -m "chore: auto-build zh winutil"
+          git push

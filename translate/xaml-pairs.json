@@ -1,0 +1,334 @@
+[
+  {
+    "old": "                                                    <MenuItem Command=\"Cut\" Header=\"Cut\"/>\n                                                    <MenuItem Command=\"Copy\" Header=\"Copy\"/>\n                                                    <MenuItem Command=\"Paste\" Header=\"Paste\"/>\n",
+    "new": "                                                    <MenuItem Command=\"Cut\" Header=\"剪下\"/>\n                                                    <MenuItem Command=\"Copy\" Header=\"複製\"/>\n                                                    <MenuItem Command=\"Paste\" Header=\"貼上\"/>\n"
+  },
+  {
+    "old": "                            <Underline>I</Underline>nstall\n",
+    "new": "                            安裝\n"
+  },
+  {
+    "old": "                            <Underline>T</Underline>weaks\n",
+    "new": "                            調校\n"
+  },
+  {
+    "old": "                            <Underline>C</Underline>onfig\n",
+    "new": "                            設定\n"
+  },
+  {
+    "old": "                            <Underline>U</Underline>pdates\n",
+    "new": "                            更新\n"
+  },
+  {
+    "old": "                            <Underline>W</Underline>in11 Creator\n",
+    "new": "                            Win11 建立工具\n"
+  },
+  {
+    "old": "                            <Underline>A</Underline>ppX Removal\n",
+    "new": "                            AppX 移除\n"
+  },
+  {
+    "old": "                            ToolTip=\"Press Ctrl-F and type app name to filter application list below. Press Esc to reset the filter\">\n",
+    "new": "                            ToolTip=\"按 Ctrl-F 並輸入軟體名稱以篩選下方清單，按 Esc 清除篩選\">\n"
+  },
+  {
+    "old": "                    ToolTip=\"Change the WinUtil UI Theme\"\n",
+    "new": "                    ToolTip=\"變更 WinUtil 介面佈景主題\"\n"
+  },
+  {
+    "old": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"Auto\" Name=\"AutoThemeMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n",
+    "new": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"自動\" Name=\"AutoThemeMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n"
+  },
+  {
+    "old": "                                    <ToolTip Content=\"Follow the Windows Theme\"/>\n",
+    "new": "                                    <ToolTip Content=\"跟隨 Windows 主題\"/>\n"
+  },
+  {
+    "old": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"Dark\" Name=\"DarkThemeMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n",
+    "new": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"深色\" Name=\"DarkThemeMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n"
+  },
+  {
+    "old": "                                    <ToolTip Content=\"Use Dark Theme\"/>\n",
+    "new": "                                    <ToolTip Content=\"使用深色主題\"/>\n"
+  },
+  {
+    "old": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"Light\" Name=\"LightThemeMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n",
+    "new": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"淺色\" Name=\"LightThemeMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n"
+  },
+  {
+    "old": "                                    <ToolTip Content=\"Use Light Theme\"/>\n",
+    "new": "                                    <ToolTip Content=\"使用淺色主題\"/>\n"
+  },
+  {
+    "old": "                    ToolTip=\"Adjust Font Scaling for Accessibility\"\n",
+    "new": "                    ToolTip=\"調整字型縮放（無障礙）\"\n"
+  },
+  {
+    "old": "                            <TextBlock Text=\"Font Scaling\"\n",
+    "new": "                            <TextBlock Text=\"字型縮放\"\n"
+  },
+  {
+    "old": "                                <TextBlock Text=\"Small\"\n",
+    "new": "                                <TextBlock Text=\"小\"\n"
+  },
+  {
+    "old": "                                <TextBlock Text=\"Large\"\n",
+    "new": "                                <TextBlock Text=\"大\"\n"
+  },
+  {
+    "old": "                                        Content=\"Reset\"\n",
+    "new": "                                        Content=\"重設\"\n"
+  },
+  {
+    "old": "                                        Content=\"Apply\"\n",
+    "new": "                                        Content=\"套用\"\n"
+  },
+  {
+    "old": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"Import\" Name=\"ImportMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n",
+    "new": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"匯入\" Name=\"ImportMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n"
+  },
+  {
+    "old": "                                    <ToolTip Content=\"Import Configuration from exported file.\"/>\n",
+    "new": "                                    <ToolTip Content=\"從匯出的檔案匯入設定。\"/>\n"
+  },
+  {
+    "old": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"Export\" Name=\"ExportMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n",
+    "new": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"匯出\" Name=\"ExportMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\">\n"
+  },
+  {
+    "old": "                                    <ToolTip Content=\"Export Selected Elements and copy execution command to clipboard.\"/>\n",
+    "new": "                                    <ToolTip Content=\"匯出所選項目，並將執行指令複製到剪貼簿。\"/>\n"
+  },
+  {
+    "old": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"About\" Name=\"AboutMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\"/>\n                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"Documentation\" Name=\"DocumentationMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\"/>\n                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"Sponsors\" Name=\"SponsorMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\"/>\n",
+    "new": "                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"關於\" Name=\"AboutMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\"/>\n                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"說明文件\" Name=\"DocumentationMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\"/>\n                            <MenuItem FontSize=\"{DynamicResource ButtonFontSize}\" Header=\"贊助者\" Name=\"SponsorMenuItem\" Foreground=\"{DynamicResource MainForegroundColor}\"/>\n"
+  },
+  {
+    "old": "                                <Label Content=\"Recommended Selections:\" FontSize=\"{DynamicResource FontSize}\" VerticalAlignment=\"Center\" Margin=\"2\"/>\n",
+    "new": "                                <Label Content=\"建議選項：\" FontSize=\"{DynamicResource FontSize}\" VerticalAlignment=\"Center\" Margin=\"2\"/>\n"
+  },
+  {
+    "old": "                                    <Button Name=\"WPFstandard\" Content=\" Standard \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFminimal\" Content=\" Minimal \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFAdvanced\" Content=\" Advanced \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFClearTweaksSelection\" Content=\" Clear \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFGetInstalledTweaks\" Content=\" Get Installed Tweaks \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n",
+    "new": "                                    <Button Name=\"WPFstandard\" Content=\" 標準 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFminimal\" Content=\" 精簡 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFAdvanced\" Content=\" 進階 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFClearTweaksSelection\" Content=\" 清除 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFGetInstalledTweaks\" Content=\" 取得已套用調校 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n"
+  },
+  {
+    "old": "                                        Note: Hover over items to get a better description. Please be careful as many of these tweaks will heavily modify your system.\n                                        <LineBreak/>Recommended selections are for normal users and if you are unsure do NOT check anything else!\n",
+    "new": "                                        注意：將滑鼠移到項目上可看到更詳細的說明。請小心，許多調校會大幅修改你的系統。\n                                        <LineBreak/>建議選項適合一般使用者；如果你不確定，請勿勾選其他項目！\n"
+  },
+  {
+    "old": "                            <Button Name=\"WPFTweaksbutton\" Content=\"Run Tweaks\" Margin=\"5\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                            <Button Name=\"WPFUndoall\" Content=\"Undo Selected Tweaks\" Margin=\"5\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n",
+    "new": "                            <Button Name=\"WPFTweaksbutton\" Content=\"執行調校\" Margin=\"5\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                            <Button Name=\"WPFUndoall\" Content=\"復原所選調校\" Margin=\"5\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n"
+  },
+  {
+    "old": "                                            Content=\"Default Settings\"\n",
+    "new": "                                            Content=\"預設設定\"\n"
+  },
+  {
+    "old": "                                        <Run FontWeight=\"Bold\">Default Windows Update Configuration</Run>\n",
+    "new": "                                        <Run FontWeight=\"Bold\">預設 Windows Update 設定</Run>\n"
+  },
+  {
+    "old": "                                         - No modifications to Windows defaults\n",
+    "new": "                                         - 不修改 Windows 預設值\n"
+  },
+  {
+    "old": "                                         - Removes any custom update settings\n",
+    "new": "                                         - 移除所有自訂更新設定\n"
+  },
+  {
+    "old": "                                        <Run FontStyle=\"Italic\" FontSize=\"11\">Note: This resets your Windows Update settings to default out of the box settings. It removes ANY policy or customization that has been done to Windows Update.</Run>\n",
+    "new": "                                        <Run FontStyle=\"Italic\" FontSize=\"11\">注意：這會把 Windows Update 設定重設為原廠預設值，並移除對 Windows Update 所做的任何原則或自訂設定。</Run>\n"
+  },
+  {
+    "old": "                                            Content=\"Security Settings\"\n",
+    "new": "                                            Content=\"安全性設定\"\n"
+  },
+  {
+    "old": "                                        <Run FontWeight=\"Bold\">Balanced Security Configuration</Run>\n",
+    "new": "                                        <Run FontWeight=\"Bold\">平衡式安全性設定</Run>\n"
+  },
+  {
+    "old": "                                         - Feature updates delayed by 365 days\n",
+    "new": "                                         - 功能更新延後 365 天\n"
+  },
+  {
+    "old": "                                         - Security updates installed after 4 days\n",
+    "new": "                                         - 安全性更新於 4 天後安裝\n"
+  },
+  {
+    "old": "                                         - Prevents Windows Update from installing drivers\n",
+    "new": "                                         - 阻止 Windows Update 安裝驅動程式\n"
+  },
+  {
+    "old": "                                        <Run FontWeight=\"SemiBold\">Feature Updates:</Run> New features and potential bugs\n",
+    "new": "                                        <Run FontWeight=\"SemiBold\">功能更新：</Run> 新功能與潛在錯誤\n"
+  },
+  {
+    "old": "                                        <Run FontWeight=\"SemiBold\">Security Updates:</Run> Critical security patches\n",
+    "new": "                                        <Run FontWeight=\"SemiBold\">安全性更新：</Run> 重大安全性修補\n"
+  },
+  {
+    "old": "                                    <Run FontStyle=\"Italic\" FontSize=\"11\">Note: This only applies to Pro systems that can use group policy.</Run>\n",
+    "new": "                                    <Run FontStyle=\"Italic\" FontSize=\"11\">注意：這僅適用於可使用群組原則的 Pro 版系統。</Run>\n"
+  },
+  {
+    "old": "                                            Content=\"Disable All Updates\"\n",
+    "new": "                                            Content=\"停用所有更新\"\n"
+  },
+  {
+    "old": "                                        <Run FontWeight=\"Bold\" Foreground=\"Red\">!! Not Recommended !!</Run>\n",
+    "new": "                                        <Run FontWeight=\"Bold\" Foreground=\"Red\">!! 不建議 !!</Run>\n"
+  },
+  {
+    "old": "                                         - Disables ALL Windows Updates\n",
+    "new": "                                         - 停用所有 Windows Update\n"
+  },
+  {
+    "old": "                                         - Increases security risks\n",
+    "new": "                                         - 增加安全性風險\n"
+  },
+  {
+    "old": "                                         - Only use for isolated systems\n",
+    "new": "                                         - 僅用於隔離的系統\n"
+  },
+  {
+    "old": "                                        <Run FontStyle=\"Italic\" FontSize=\"11\">Warning: Your system will be vulnerable without security updates.</Run>\n",
+    "new": "                                        <Run FontStyle=\"Italic\" FontSize=\"11\">警告：沒有安全性更新，你的系統將處於風險之中。</Run>\n"
+  },
+  {
+    "old": "                                        Step 1 - Select Windows 11 ISO\n",
+    "new": "                                        步驟 1 - 選擇 Windows 11 ISO\n"
+  },
+  {
+    "old": "                                               TextWrapping=\"Wrap\" Margin=\"0,0,0,6\">\n                                        Browse to your locally saved Windows 11 ISO file. Only official ISOs\n                                        downloaded from Microsoft are supported.\n                                    </TextBlock>\n",
+    "new": "                                               TextWrapping=\"Wrap\" Margin=\"0,0,0,6\">瀏覽並選擇本機儲存的 Windows 11 ISO 檔案。僅支援從 Microsoft 官方下載的 ISO。</TextBlock>\n"
+  },
+  {
+    "old": "                                        <Run FontWeight=\"Bold\">NOTE:</Run> This is only meant for Fresh and New Windows installs.\n",
+    "new": "                                        <Run FontWeight=\"Bold\">注意：</Run> 此功能僅適用於全新安裝的 Windows。\n"
+  },
+  {
+    "old": "                                                 Text=\"No ISO selected...\"\n",
+    "new": "                                                 Text=\"未選擇 ISO...\"\n"
+  },
+  {
+    "old": "                                                Content=\"Browse\"\n",
+    "new": "                                                Content=\"瀏覽\"\n"
+  },
+  {
+    "old": "                                            !!WARNING!! You must use an official Microsoft ISO\n",
+    "new": "                                            !!警告!! 你必須使用 Microsoft 官方 ISO\n"
+  },
+  {
+    "old": "                                                   TextWrapping=\"Wrap\" Margin=\"0,0,0,8\">\n                                            Download the Windows 11 ISO directly from Microsoft.com.\n                                            Third-party, pre-modified, or unofficial images are not supported\n                                            and may produce broken results.\n                                        </TextBlock>\n",
+    "new": "                                                   TextWrapping=\"Wrap\" Margin=\"0,0,0,8\">直接從 Microsoft.com 下載 Windows 11 ISO。不支援第三方、預先修改或非官方的映像，可能導致失敗。</TextBlock>\n"
+  },
+  {
+    "old": "                                            On the Microsoft download page, choose:\n",
+    "new": "                                            在 Microsoft 下載頁面選擇：\n"
+  },
+  {
+    "old": "                                            - Edition  : Windows 11\n                                            <LineBreak/>- Language : your preferred language\n                                            <LineBreak/>- Architecture : 64-bit (x64)\n",
+    "new": "                                            - 版本：Windows 11\n                                            <LineBreak/>- 語言：你偏好的語言\n                                            <LineBreak/>- 架構：64 位元 (x64)\n"
+  },
+  {
+    "old": "                                                Content=\"Open Microsoft Download Page\"\n",
+    "new": "                                                Content=\"開啟 Microsoft 下載頁面\"\n"
+  },
+  {
+    "old": "                                        Step 2 - Mount &amp; Verify ISO\n",
+    "new": "                                        步驟 2 - 掛載並驗證 ISO\n"
+  },
+  {
+    "old": "                                               TextWrapping=\"Wrap\" Margin=\"0,0,0,12\" MaxWidth=\"320\">\n                                        Mount the ISO and confirm it contains a valid Windows 11\n                                        install.wim before any modifications are made.\n                                    </TextBlock>\n",
+    "new": "                                               TextWrapping=\"Wrap\" Margin=\"0,0,0,12\" MaxWidth=\"320\">掛載 ISO，並在進行任何修改前確認其中含有有效的 Windows 11 install.wim。</TextBlock>\n"
+  },
+  {
+    "old": "                                            Content=\"Mount &amp; Verify ISO\"\n",
+    "new": "                                            Content=\"掛載並驗證 ISO\"\n"
+  },
+  {
+    "old": "                                              Content=\"Inject current system drivers\"\n",
+    "new": "                                              Content=\"注入目前系統驅動程式\"\n"
+  },
+  {
+    "old": "                                              ToolTip=\"Exports all drivers from this machine and injects them into install.wim and boot.wim. Recommended for systems with unsupported NVMe or network controllers.\"/>\n",
+    "new": "                                              ToolTip=\"從本機匯出所有驅動程式並注入 install.wim 與 boot.wim。建議用於 NVMe 或網路控制器不受支援的系統。\"/>\n"
+  },
+  {
+    "old": "                                            Select Edition:\n",
+    "new": "                                            選擇版本：\n"
+  },
+  {
+    "old": "                                    Step 3 - Modify install.wim\n",
+    "new": "                                    步驟 3 - 修改 install.wim\n"
+  },
+  {
+    "old": "                                           TextWrapping=\"Wrap\" Margin=\"0,0,0,12\">\n                                    The ISO contents will be extracted to a temporary working directory,\n                                    install.wim will be modified (components removed, tweaks applied),\n                                    and the result will be repackaged. This process may take several minutes\n                                    depending on your hardware.\n                                </TextBlock>\n",
+    "new": "                                           TextWrapping=\"Wrap\" Margin=\"0,0,0,12\">ISO 內容會被解壓縮到暫存工作目錄，install.wim 會被修改（移除元件、套用調校），接著重新封裝。此程序視硬體效能可能需要數分鐘。</TextBlock>\n"
+  },
+  {
+    "old": "                                        Content=\"Run Windows ISO Modification and Creator\"\n",
+    "new": "                                        Content=\"執行 Windows ISO 修改與建立工具\"\n"
+  },
+  {
+    "old": "                                        Step 4 - Output: What would you like to do with the modified image?\n",
+    "new": "                                        步驟 4 - 輸出：你想如何處理修改後的映像？\n"
+  },
+  {
+    "old": "                                            Content=\"Clean &amp; Reset\"\n",
+    "new": "                                            Content=\"清除並重設\"\n"
+  },
+  {
+    "old": "                                            ToolTip=\"Delete the temporary working directory and reset the interface back to Step 1\"\n",
+    "new": "                                            ToolTip=\"刪除暫存工作目錄並將介面重設回步驟 1\"\n"
+  },
+  {
+    "old": "                                            Content=\"Save as an ISO File\"\n",
+    "new": "                                            Content=\"另存為 ISO 檔\"\n"
+  },
+  {
+    "old": "                                            Content=\"Write Directly to a USB Drive (ERASES DRIVE)\"\n",
+    "new": "                                            Content=\"直接寫入 USB 隨身碟（會清除磁碟）\"\n"
+  },
+  {
+    "old": "                                            <Run FontWeight=\"Bold\" Foreground=\"OrangeRed\">!! All data on the selected USB drive will be permanently erased !!</Run>\n",
+    "new": "                                            <Run FontWeight=\"Bold\" Foreground=\"OrangeRed\">!! 所選 USB 磁碟上的所有資料將被永久清除 !!</Run>\n"
+  },
+  {
+    "old": "                                            Select a removable USB drive below, then click Erase &amp; Write.\n",
+    "new": "                                            在下方選擇一個卸除式 USB 磁碟，然後點擊「清除並寫入」。\n"
+  },
+  {
+    "old": "                                                    Content=\"Refresh\"\n",
+    "new": "                                                    Content=\"重新整理\"\n"
+  },
+  {
+    "old": "                                                Content=\"Erase &amp; Write to USB\"\n",
+    "new": "                                                Content=\"清除並寫入 USB\"\n"
+  },
+  {
+    "old": "                            Status Log\n",
+    "new": "                            狀態記錄\n"
+  },
+  {
+    "old": "                                 Text=\"Ready. Please select a Windows 11 ISO to begin.\"/>\n",
+    "new": "                                 Text=\"已就緒。請選擇一個 Windows 11 ISO 以開始。\"/>\n"
+  },
+  {
+    "old": "                                <Label Content=\"Selections:\" FontSize=\"{DynamicResource FontSize}\" VerticalAlignment=\"Center\" Margin=\"2\"/>\n",
+    "new": "                                <Label Content=\"選項：\" FontSize=\"{DynamicResource FontSize}\" VerticalAlignment=\"Center\" Margin=\"2\"/>\n"
+  },
+  {
+    "old": "                                    <Button Name=\"WPFDefaultAppxSelection\" Content=\" Default \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFGetInstalledAppx\" Content=\" Get Installed \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFSelectAllAppx\" Content=\" Select All \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFClearAppxSelection\" Content=\" Clear Selection \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n",
+    "new": "                                    <Button Name=\"WPFDefaultAppxSelection\" Content=\" 預設 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFGetInstalledAppx\" Content=\" 取得已安裝 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFSelectAllAppx\" Content=\" 全選 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n                                    <Button Name=\"WPFClearAppxSelection\" Content=\" 清除選取 \" Margin=\"2\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n"
+  },
+  {
+    "old": "                                        Note: Select the pre-installed Windows AppX packages you wish to remove and click 'Remove Selected'.\n                                        <LineBreak/>These packages are removed for the current user and all new user profiles.\n",
+    "new": "                                        注意：勾選你想移除的預先安裝 Windows AppX 套件，然後點擊「移除所選」。\n                                        <LineBreak/>這些套件會針對目前使用者及所有新使用者設定檔移除。\n"
+  },
+  {
+    "old": "                            <Button Name=\"WPFRemoveSelectedAppx\" Content=\"Remove Selected\" Margin=\"5\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n",
+    "new": "                            <Button Name=\"WPFRemoveSelectedAppx\" Content=\"移除所選\" Margin=\"5\" Width=\"{DynamicResource ButtonWidth}\" Height=\"{DynamicResource ButtonHeight}\"/>\n"
+  }
+]
