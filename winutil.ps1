@@ -951,16 +951,16 @@ function Initialize-InstallAppEntry {
         $icon.SetResourceReference([Windows.FrameworkElement]::HeightProperty, "AppEntryIconSize")
         $icon.Margin = New-Object Windows.Thickness(0, 0, 8, 0)
         $fallback = New-Object Windows.Controls.TextBlock
-        $fallback.Text = $(if ($app.content) { $app.content.TrimStart(".").Substring(0, 1).ToUpper() } else { "?" })
+        $fallback.Text = $app.content.TrimStart(".").Substring(0, 1).ToUpper()
         $fallback.FontWeight = "Bold"; $fallback.HorizontalAlignment = "Center"; $fallback.VerticalAlignment = "Center"
-        if ($Apps.$appKey.link) { $fallback.Visibility = "Collapsed" }
+        if ($app.link) { $fallback.Visibility = "Collapsed" }
         $fallback.SetResourceReference([Windows.Controls.TextBlock]::FontSizeProperty, "AppEntryFontSize")
         $fallback.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, "ToggleButtonOnColor")
         [void]$icon.Children.Add($fallback)
-        if ($Apps.$appKey.link) {
+        if ($app.link) {
             $logo = New-Object Windows.Controls.Image
             $logo.Stretch = [Windows.Media.Stretch]::Uniform
-            $logo.Source = "https://www.google.com/s2/favicons?sz=64&domain_url=$([uri]::EscapeDataString($Apps.$appKey.link))"
+            $logo.Source = "https://www.google.com/s2/favicons?sz=64&domain_url=$([uri]::EscapeDataString($app.link))"
             $logo.Add_ImageFailed({ $this.Visibility = "Collapsed"; $this.Parent.Children[0].Visibility = "Visible" })
             [void]$icon.Children.Add($logo)
         }
@@ -3725,6 +3725,7 @@ function Invoke-WinUtilTweaks {
             $sync.configs.tweaks.$CheckBox.appx | ForEach-Object {
                 Remove-WinUtilAPPX -Name $psitem
             }
+            Remove-WinUtilProvisionedAPPX -PackageList $sync.configs.tweaks.$CheckBox.appx
         }
     }
     Write-WinUtilLog -Component "Tweaks" -Message "$action tweak completed: $CheckBox"
@@ -3760,9 +3761,84 @@ function Remove-WinUtilAPPX {
 
     Write-Host "Removing $Name"
     Write-WinUtilLog -Component "AppX" -Message "Removing AppX package pattern: $Name"
-    Get-AppxPackage $Name -AllUsers | Remove-AppxPackage -AllUsers
-    Get-AppxProvisionedPackage -Online | Where-Object DisplayName -like $Name | Remove-AppxProvisionedPackage -Online
+
+    # We explicitly loop through packages instead of using the pipeline because PowerShell 7 pipeline binding
+    # for Remove-AppxPackage fails silently, and Get-AppxPackage -AllUsers returns duplicate objects for each user profile.
+    $pkgs = Get-AppxPackage "*$Name*" -AllUsers | Sort-Object -Property PackageFullName -Unique
+    if ($null -ne $pkgs) {
+        foreach ($pkg in $pkgs) {
+            try {
+                Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction Stop
+            }
+            catch {
+                Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message "Failed to remove AppX package $($pkg.PackageFullName): $($_.Exception.Message)"
+            }
+        }
+    }
+
     Write-WinUtilLog -Component "AppX" -Message "AppX removal completed for package pattern: $Name"
+}
+
+function Remove-WinUtilProvisionedAPPX {
+    <#
+
+    .SYNOPSIS
+        Removes all AppX provisioned packages that match the given names
+
+    .PARAMETER PackageList
+        An array of names of the APPX packages to remove
+
+    .EXAMPLE
+        Remove-WinUtilProvisionedAPPX -PackageList @("Microsoft.Microsoft3DViewer", "Microsoft.WindowsCalculator")
+
+    #>
+    param (
+        [string[]]$PackageList
+    )
+
+    if ($null -eq $PackageList -or $PackageList.Count -eq 0) {
+        return
+    }
+
+    Write-Host "`nRemoving provisioned packages..."
+    Write-WinUtilLog -Component "AppX" -Message "Removing AppX provisioned packages: $($PackageList -join ', ')"
+
+    # DISM cmdlets like Get-AppxProvisionedPackage often fail with "Class not registered" or hang in PowerShell 7.
+    # We shell out to Windows PowerShell 5.1 (powershell.exe) to reliably remove the provisioned packages.
+    $ps5Command = {
+        $pkgs = $args
+        $provisionedPackages = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+        $failures = [System.Collections.Generic.List[string]]::new()
+
+        foreach ($Package in $pkgs) {
+            $provs = $provisionedPackages |
+                Where-Object DisplayName -Like "*$Package*"
+
+            if ($null -ne $provs) {
+                foreach ($prov in $provs) {
+                    try {
+                        Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName -ErrorAction Stop | Out-Null
+                    }
+                    catch {
+                        $failures.Add("Failed to remove provisioned AppX package $($prov.PackageName): $($_.Exception.Message)")
+                    }
+                }
+            }
+        }
+
+        if ($failures.Count -gt 0) {
+            throw ($failures -join [Environment]::NewLine)
+        }
+    }
+
+    $removalOutput = powershell.exe -NoProfile -NonInteractive -Command $ps5Command -args $PackageList 2>&1
+    if ($LASTEXITCODE -ne 0 -or $null -ne $removalOutput) {
+        $failureDetails = ($removalOutput | Out-String).Trim()
+        Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message "AppX provisioned package removal failed: $failureDetails"
+        return
+    }
+
+    Write-WinUtilLog -Component "AppX" -Message "AppX provisioned package removal completed."
 }
 
 function Reset-WPFCheckBoxes {
@@ -4848,11 +4924,13 @@ function Invoke-WPFAppxRemoval {
         $sync.ProcessRunning = $true
         Write-WinUtilLog -Component "AppX" -Message "Starting AppX removal for $(@($selected).Count) selected package(s)."
 
+        $packageList = [System.Collections.Generic.List[string]]::new()
+
         foreach ($key in $selected) {
             if ($key -eq "WPFAppxMicrosoft_XboxGamingOverlay") {
                 # Making sure Game Bar isn't running
                 Write-WinUtilLog -Component "AppX" -Message "Stopping GameBarFTServer before removing Xbox Gaming Overlay."
-                Stop-Process -Name GameBarFTServer
+                Stop-Process -Name GameBarFTServer -Force -Confirm:$false -ErrorAction SilentlyContinue
 
                 # This stops annoying ms-gamebar popup when launching games.
                 Write-WinUtilLog -Component "AppX" -Message "Disabling Game DVR capture before removing Xbox Gaming Overlay."
@@ -4860,20 +4938,24 @@ function Invoke-WPFAppxRemoval {
             }
 
             if ($key -eq "WPFAppxMicrosoft_WindowsNotepad") {
-                # i hope your having fun reading this
                 Write-WinUtilLog -Component "AppX" -Message "Stopping dllhost before removing Notepad."
-                Stop-Process -Name dllhost
+                Stop-Process -Name dllhost -Force -Confirm:$false -ErrorAction SilentlyContinue
             }
 
             Write-Host "Removing $($apps[$key].Content)"
             Write-WinUtilLog -Component "AppX" -Message "Removing $($apps[$key].Content) ($($apps[$key].PackageId))."
-            Get-AppxPackage -Name $apps[$key].PackageId -AllUsers | Remove-AppxPackage -AllUsers
+            Remove-WinUtilAPPX -Name $apps[$key].PackageId
+            $packageList.Add($apps[$key].PackageId)
 
             if ($key -eq "WPFAppxMSTeams") {
                 # Uninstalls Microsoft Teams Meeting Add-in for Microsoft Office
                 Write-WinUtilLog -Component "AppX" -Message "Uninstalling Microsoft Teams meeting add-in package."
                 Get-Package -Name "Microsoft Teams*" -ErrorAction SilentlyContinue | Uninstall-Package -Force
             }
+        }
+
+        if ($packageList.Count -gt 0) {
+            Remove-WinUtilProvisionedAPPX -PackageList $packageList.ToArray()
         }
 
         Write-Host "================================="
@@ -4952,6 +5034,8 @@ function Invoke-WPFButton {
         "WPFUpdatessecurity" {Invoke-WPFUpdatessecurity}
         "WPFGetInstalled" {Invoke-WPFGetInstalled -CheckBox "winget"}
         "WPFGetInstalledTweaks" {Invoke-WPFGetInstalled -CheckBox "tweaks"}
+        "WPFAppxRemoval" {Invoke-WPFTab "WPFTab6BT"}
+        "WPFBackToTweaks" {Invoke-WPFTab "WPFTab2BT"}
         "WPFRemoveSelectedAppx" {Invoke-WPFAppxRemoval}
         "WPFDefaultAppxSelection" {Invoke-WPFPresets "AppxDefault" -checkboxfilterpattern "WPFAppx*"}
         "WPFSelectAllAppx" {
@@ -5845,13 +5929,12 @@ function Invoke-WPFTab {
     $tabNumber = [int]($ClickedTab -replace "WPFTab","" -replace "BT","") - 1
 
     $filter = Get-WinUtilVariables -Type ToggleButton | Where-Object {$psitem -like "WPFTab?BT"}
+    $sync.$tabNav.Items[$tabNumber].IsSelected = $true
     ($sync.GetEnumerator()).where{$psitem.Key -in $filter} | ForEach-Object {
         if ($ClickedTab -ne $PSItem.name) {
             $sync[$PSItem.Name].IsChecked = $false
         } else {
             $sync["$ClickedTab"].IsChecked = $true
-            $tabNumber = [int]($ClickedTab-replace "WPFTab","" -replace "BT","") - 1
-            $sync.$tabNav.Items[$tabNumber].IsSelected = $true
         }
     }
     $sync.currentTab = $sync.$tabNav.Items[$tabNumber].Header
@@ -6476,7 +6559,7 @@ function Invoke-WPFUIElements {
 
                         $sync[$entryInfo.Name].Add_Unchecked({
                             [System.Object]$Sender = $args[0]
-                            Invoke-WPFSelectedCheckboxesUpdate -type "Remove" -checkbox $Sender.name
+                            Invoke-WPFSelectedCheckboxesUpdate -type "Remove" -checkboxName $Sender.name
                         })
                     }
                 }
@@ -7354,6 +7437,15 @@ $sync.configs.applications = @'
     "link": "https://www.techpowerup.com/gpuz/",
     "winget": "TechPowerUp.GPU-Z",
     "foss": false
+  },
+  "WPFInstallgsudo": {
+    "category": "Pro Tools",
+    "choco": "gsudo",
+    "content": "gsudo",
+    "description": "gsudo is a sudo equivalent for Windows. It allows you to run commands with elevated administrative privileges directly within the current console window.",
+    "link": "https://github.com/gerardog/gsudo",
+    "winget": "gerardog.gsudo",
+    "foss": true
   },
   "WPFInstallhelium": {
     "category": "瀏覽器",
@@ -9200,6 +9292,17 @@ $sync.configs.feature = @'
     "function": "Invoke-WPFFixesWinget",
     "link": "https://winutil.christitus.com/dev/features/fixes/winget"
   },
+  "WPFPanelComputer": {
+    "Content": "電腦管理",
+    "category": "傳統 Windows 面板",
+    "panel": "2",
+    "Type": "Button",
+    "ButtonWidth": "300",
+    "InvokeScript": [
+      "compmgmt.msc"
+    ],
+    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/computer"
+  },
   "WPFPanelControl": {
     "Content": "控制台",
     "category": "傳統 Windows 面板",
@@ -9211,16 +9314,16 @@ $sync.configs.feature = @'
     ],
     "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/control"
   },
-  "WPFPanelComputer": {
-    "Content": "電腦管理",
+  "WPFPanelMouse": {
+    "Content": "Mouse Properties",
     "category": "傳統 Windows 面板",
     "panel": "2",
     "Type": "Button",
     "ButtonWidth": "300",
     "InvokeScript": [
-      "compmgmt.msc"
+      "main.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/computer"
+    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/mouse"
   },
   "WPFPanelNetwork": {
     "Content": "網路連線",
@@ -9255,6 +9358,17 @@ $sync.configs.feature = @'
     ],
     "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/printer"
   },
+  "WPFPanelPrograms": {
+    "Content": "Programs and Features",
+    "category": "傳統 Windows 面板",
+    "panel": "2",
+    "Type": "Button",
+    "ButtonWidth": "300",
+    "InvokeScript": [
+      "appwiz.cpl"
+    ],
+    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/programs"
+  },
   "WPFPanelRegion": {
     "Content": "地區",
     "category": "傳統 Windows 面板",
@@ -9266,16 +9380,16 @@ $sync.configs.feature = @'
     ],
     "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/region"
   },
-  "WPFPanelRestore": {
-    "Content": "Windows 還原",
+  "WPFPanelSecurity": {
+    "Content": "Security and Maintenance",
     "category": "傳統 Windows 面板",
     "panel": "2",
     "Type": "Button",
     "ButtonWidth": "300",
     "InvokeScript": [
-      "rstrui.exe"
+      "wscui.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/restore"
+    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/security"
   },
   "WPFPanelSound": {
     "Content": "音效設定",
@@ -9309,6 +9423,28 @@ $sync.configs.feature = @'
       "timedate.cpl"
     ],
     "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/timedate"
+  },
+  "WPFPanelFirewall": {
+    "Content": "Windows Defender Firewall",
+    "category": "傳統 Windows 面板",
+    "panel": "2",
+    "Type": "Button",
+    "ButtonWidth": "300",
+    "InvokeScript": [
+      "firewall.cpl"
+    ],
+    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/firewall"
+  },
+  "WPFPanelRestore": {
+    "Content": "Windows 還原",
+    "category": "傳統 Windows 面板",
+    "panel": "2",
+    "Type": "Button",
+    "ButtonWidth": "300",
+    "InvokeScript": [
+      "rstrui.exe"
+    ],
+    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/restore"
   },
   "WPFWinUtilInstallPSProfile": {
     "Content": "CTT PowerShell Profile - 安裝",
@@ -9953,7 +10089,7 @@ $sync.configs.tweaks = @'
   },
   "WPFTweaksConsumerFeatures": {
     "Content": "消費者功能 - 停用",
-    "Description": "Windows 不會為登入的使用者自動從 Windows Store 安裝任何遊戲、第三方應用程式或應用程式連結。部分預設應用程式將無法使用（例如 Phone Link）。",
+    "Description": "Stops promoted app installs and reduces app suggestions from Microsoft Store content.",
     "category": "必要調校",
     "panel": "1",
     "registry": [
@@ -10372,6 +10508,22 @@ $sync.configs.tweaks = @'
       }
     ],
     "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/wpbt"
+  },
+  "WPFTweaksPreventDeviceMetadataFromNetwork": {
+    "Content": "Prevent Device Companion Apps",
+    "Description": "Prevents additional software from being installed when plugging in devices (e.g. Ads when plugging in a monitor). Poses potential security risk.",
+    "category": "必要調校",
+    "panel": "1",
+    "registry": [
+      {
+        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Device Metadata",
+        "Name": "PreventDeviceMetadataFromNetwork",
+        "Value": "1",
+        "Type": "DWord",
+        "OriginalValue": "<RemoveEntry>"
+      }
+    ],
+    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/preventdevicemetadatafromnetwork"
   },
   "WPFTweaksRazerBlock": {
     "Content": "Razer 軟體自動安裝 - 停用",
@@ -12171,14 +12323,6 @@ $inputXML = @'
                         </TextBlock>
                     </ToggleButton.Content>
                 </ToggleButton>
-                <ToggleButton Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="Auto" MinWidth="{DynamicResource TabButtonWidth}"
-                    Background="{DynamicResource ButtonAppxBackgroundColor}" Foreground="{DynamicResource ButtonAppxForegroundColor}" FontWeight="Bold" Name="WPFTab6BT">
-                    <ToggleButton.Content>
-                        <TextBlock FontSize="{DynamicResource TabButtonFontSize}" Background="Transparent" Foreground="{DynamicResource ButtonAppxForegroundColor}">
-                            AppX 移除
-                        </TextBlock>
-                    </ToggleButton.Content>
-                </ToggleButton>
             </StackPanel>
 
             <!-- Search Bar and Action Buttons -->
@@ -12425,6 +12569,7 @@ $inputXML = @'
                                     <Button Name="WPFAdvanced" Content=" 進階 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFClearTweaksSelection" Content=" 清除 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFGetInstalledTweaks" Content=" 取得已套用調校 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFAppxRemoval" Content=" AppX Removal " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                 </StackPanel>
                             </StackPanel>
 
@@ -12890,6 +13035,7 @@ $inputXML = @'
 
                     <Border Grid.Row="1" Background="{DynamicResource MainBackgroundColor}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="5" HorizontalAlignment="Stretch" Padding="10">
                         <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+                            <Button Name="WPFBackToTweaks" Content="Back to Tweaks" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                             <Button Name="WPFRemoveSelectedAppx" Content="移除所選" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                         </WrapPanel>
                     </Border>
