@@ -278,5 +278,14 @@
         "new": "    $cleanupCallback = [System.Delegate]::CreateDelegate([System.Threading.WaitOrTimerCallback], [WinUtilRunspaceCleanup], \"Cleanup\")"
       }
     ]
+  },
+  {
+    "file": "functions/private/Initialize-InstallAppEntry.ps1",
+    "pairs": [
+      {
+        "old": "        $fallback.Text = $Apps.$appKey.content.TrimStart(\".\").Substring(0, 1).ToUpper()",
+        "new": "        $fallback.Text = $(if ($app.content) { $app.content.TrimStart(\".\").Substring(0, 1).ToUpper() } else { \"?\" })"
+      }
+    ]
   }
 ]
