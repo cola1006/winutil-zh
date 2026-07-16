@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.07.15
+    Version        : 26.07.16
 #>
 
 param (
@@ -57,11 +57,12 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.07.15"
+$sync.version = "26.07.16"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
 $sync.ProcessRunning = $false
+$sync.Win11ISOProcessRunning = $false
 $sync.selectedAppx = [System.Collections.Generic.List[string]]::new()
 $sync.selectedApps = [System.Collections.Generic.List[string]]::new()
 $sync.selectedTweaks = [System.Collections.Generic.List[string]]::new()
@@ -162,6 +163,9 @@ function Find-AppsByNameOrDescription {
         .PARAMETER SearchString
             The string to be searched for. Wildcards are treated as literal characters.
 
+        .PARAMETER Category
+            When provided, only applications in this exact category are shown.
+
         .NOTES
             - Uses module-scope $sync (no parameter needed; inherits from caller's scope)
             - Performs literal matching (no wildcard expansion)
@@ -170,7 +174,10 @@ function Find-AppsByNameOrDescription {
     #>
     param(
         [Parameter(Mandatory = $false)]
-        [string]$SearchString = ""
+        [string]$SearchString = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$Category = ""
     )
 
     # Validate that $sync exists and has required structure
@@ -191,7 +198,7 @@ function Find-AppsByNameOrDescription {
 
     try {
         # Reset the visibility if the search string is empty or the search is cleared
-        if ([string]::IsNullOrWhiteSpace($SearchString)) {
+        if ([string]::IsNullOrWhiteSpace($SearchString) -and [string]::IsNullOrWhiteSpace($Category)) {
             $sync.ItemsControl.Items | ForEach-Object {
                 # Each item is a StackPanel container
                 $_.Visibility = [Windows.Visibility]::Visible
@@ -246,10 +253,11 @@ function Find-AppsByNameOrDescription {
 
                     # Check if app matches search criteria
                     if ($null -ne $appEntry) {
-                        $contentMatch = $appEntry.Content -like "*$escapedSearchString*"
-                        $descriptionMatch = $appEntry.Description -like "*$escapedSearchString*"
+                        $categoryMatch = -not [string]::IsNullOrWhiteSpace($Category) -and $appEntry.Category -eq $Category
+                        $contentMatch = [string]::IsNullOrWhiteSpace($Category) -and $appEntry.Content -like "*$escapedSearchString*"
+                        $descriptionMatch = [string]::IsNullOrWhiteSpace($Category) -and $appEntry.Description -like "*$escapedSearchString*"
 
-                        if ($contentMatch -or $descriptionMatch) {
+                        if ($categoryMatch -or $contentMatch -or $descriptionMatch) {
                             # Show the App and mark that this category has a match
                             $appControl.Visibility = [Windows.Visibility]::Visible
                             $categoryHasMatch = $true
@@ -597,6 +605,31 @@ function Find-TweaksByNameOrDescription {
     }
 }
 
+function Get-WinUtilInstalledAPPX {
+    <#
+
+    .SYNOPSIS
+        Gets the names of AppX packages installed for all users
+
+    #>
+
+    # AppX module auto-loading can leave PowerShell 7 dependent on a temporary Windows PowerShell
+    # compatibility proxy. Run the query in Windows PowerShell 5.1 so it remains available after
+    # those temporary proxy files are removed.
+    $ps5Command = {
+        Get-AppxPackage -AllUsers -ErrorAction Stop | Select-Object -ExpandProperty Name
+    }
+
+    $packageOutput = powershell.exe -NoProfile -NonInteractive -Command $ps5Command 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $failureDetails = ($packageOutput | Out-String).Trim()
+        Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message "Failed to get installed AppX packages: $failureDetails"
+        return @()
+    }
+
+    return @($packageOutput)
+}
+
 function Get-WinUtilPackageLogSummary {
     param(
         [Parameter(Mandatory = $true)]
@@ -754,27 +787,12 @@ function Get-WinUtilVariables {
     return $keys
 }
 
-function Hide-WPFInstallAppBusy {
-    <#
-    .SYNOPSIS
-        Hides the busy overlay in the install app area of the WPF form.
-        This is used to indicate that an install or uninstall has finished.
-    #>
-    Invoke-WPFUIThread -ScriptBlock {
-        $sync.InstallAppAreaOverlay.Visibility = [Windows.Visibility]::Collapsed
-        $sync.InstallAppAreaBorder.IsEnabled = $true
-        $sync.InstallAppAreaScrollViewer.Effect.Radius = 0
-    }
-}
-
     function Initialize-InstallAppArea {
         <#
             .SYNOPSIS
                 Creates a [Windows.Controls.ScrollViewer] containing a [Windows.Controls.ItemsControl] which is setup to use Virtualization to only load the visible elements for performance reasons.
                 This is used as the parent object for all category and app entries on the install tab
                 Used to as part of the Install Tab UI generation
-
-                Also creates an overlay with a progress bar and text to indicate that an install or uninstall is in progress
 
             .PARAMETER TargetElement
                 The element to which the AppArea should be added
@@ -788,21 +806,13 @@ function Hide-WPFInstallAppBusy {
         $Border = New-Object Windows.Controls.Border
         $Border.VerticalAlignment = "Stretch"
         $Border.SetResourceReference([Windows.Controls.Control]::StyleProperty, "BorderStyle")
-        $sync.InstallAppAreaBorder = $Border
-
         # Add a ScrollViewer, because the ItemsControl does not support scrolling by itself
         $scrollViewer = New-Object Windows.Controls.ScrollViewer
         $scrollViewer.VerticalScrollBarVisibility = 'Auto'
         $scrollViewer.HorizontalAlignment = 'Stretch'
         $scrollViewer.VerticalAlignment = 'Stretch'
         $scrollViewer.CanContentScroll = $true
-        $sync.InstallAppAreaScrollViewer = $scrollViewer
         $Border.Child = $scrollViewer
-
-        # Initialize the Blur Effect for the ScrollViewer, which will be used to indicate that an install/uninstall is in progress
-        $blurEffect = New-Object Windows.Media.Effects.BlurEffect
-        $blurEffect.Radius = 0
-        $scrollViewer.Effect = $blurEffect
 
         ## Create the ItemsControl, which will be the parent of all the app entries
         $itemsControl = New-Object Windows.Controls.ItemsControl
@@ -820,62 +830,6 @@ function Hide-WPFInstallAppBusy {
 
         # Add the Border containing the App Area to the target Grid
         $targetGrid.Children.Add($Border) | Out-Null
-
-        $overlay = New-Object Windows.Controls.Border
-        $overlay.CornerRadius = New-Object Windows.CornerRadius(10)
-        $overlay.SetResourceReference([Windows.Controls.Control]::BackgroundProperty, "AppInstallOverlayBackgroundColor")
-        $overlay.Visibility = [Windows.Visibility]::Collapsed
-
-        # Also add the overlay to the target Grid on top of the App Area
-        $targetGrid.Children.Add($overlay) | Out-Null
-        $sync.InstallAppAreaOverlay = $overlay
-
-        $overlayText = New-Object Windows.Controls.TextBlock
-        $overlayText.Text = "Installing apps..."
-        $overlayText.HorizontalAlignment = 'Center'
-        $overlayText.VerticalAlignment = 'Center'
-        $overlayText.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, "MainForegroundColor")
-        $overlayText.Background = "Transparent"
-        $overlayText.SetResourceReference([Windows.Controls.TextBlock]::FontSizeProperty, "HeaderFontSize")
-        $overlayText.SetResourceReference([Windows.Controls.TextBlock]::FontFamilyProperty, "MainFontFamily")
-        $overlayText.SetResourceReference([Windows.Controls.TextBlock]::FontWeightProperty, "MainFontWeight")
-        $overlayText.SetResourceReference([Windows.Controls.TextBlock]::MarginProperty, "MainMargin")
-        $sync.InstallAppAreaOverlayText = $overlayText
-
-        $progressbar = New-Object Windows.Controls.ProgressBar
-        $progressbar.Name = "ProgressBar"
-        $progressbar.Width = 250
-        $progressbar.Height = 50
-        $sync.ProgressBar = $progressbar
-
-        # Add a TextBlock overlay for the progress bar text
-        $progressBarTextBlock = New-Object Windows.Controls.TextBlock
-        $progressBarTextBlock.Name = "progressBarTextBlock"
-        $progressBarTextBlock.FontWeight = [Windows.FontWeights]::Bold
-        $progressBarTextBlock.FontSize = 16
-        $progressBarTextBlock.Width = $progressbar.Width
-        $progressBarTextBlock.Height = $progressbar.Height
-        $progressBarTextBlock.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, "ProgressBarTextColor")
-        $progressBarTextBlock.TextTrimming = "CharacterEllipsis"
-        $progressBarTextBlock.Background = "Transparent"
-        $sync.progressBarTextBlock = $progressBarTextBlock
-
-        # Create a Grid to overlay the text on the progress bar
-        $progressGrid = New-Object Windows.Controls.Grid
-        $progressGrid.Width = $progressbar.Width
-        $progressGrid.Height = $progressbar.Height
-        $progressGrid.Margin = "0,10,0,10"
-        $progressGrid.Children.Add($progressbar) | Out-Null
-        $progressGrid.Children.Add($progressBarTextBlock) | Out-Null
-
-        $overlayStackPanel = New-Object Windows.Controls.StackPanel
-        $overlayStackPanel.Orientation = "Vertical"
-        $overlayStackPanel.HorizontalAlignment = 'Center'
-        $overlayStackPanel.VerticalAlignment = 'Center'
-        $overlayStackPanel.Children.Add($overlayText) | Out-Null
-        $overlayStackPanel.Children.Add($progressGrid) | Out-Null
-
-        $overlay.Child = $overlayStackPanel
 
         return $itemsControl
     }
@@ -1167,7 +1121,7 @@ function Initialize-WinUtilTabContent {
         "AppX" {
             Invoke-WPFUIElements -configVariable $sync.configs.appx -targetGridName "appxpanel" -columncount 2
         }
-        "Win11 Creator" {
+        "Win11ISO" {
             if ($sync.Form -and $sync.Form.Dispatcher) {
                 $sync.Form.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [action]{ Invoke-WinUtilISOCheckExistingWork }) | Out-Null
             }
@@ -1194,6 +1148,86 @@ function Initialize-WinUtilTaskbarOverlayAssets {
     if ($IncludeStatusAssets -and -not $sync["warningrender"]) {
         $sync["warningrender"] = (Invoke-WinUtilAssets -Type "warning" -Size 512 -Render)
     }
+}
+
+function Install-WinUtilAPPX {
+    <#
+
+    .SYNOPSIS
+        Registers a local AppX package or installs it from the Microsoft Store
+
+    .PARAMETER Name
+        The AppX package name to install
+
+    .PARAMETER StoreId
+        The optional Microsoft Store product ID used when no local manifest is available
+
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [string]$StoreId
+    )
+
+    Write-WinUtilLog -Component "AppX" -Message "Installing AppX package: $Name"
+
+    # AppX and DISM cmdlets are more reliable in Windows PowerShell 5.1. Query both installed and
+    # provisioned package metadata because either can expose a local manifest that can be registered.
+    $ps5Command = {
+        $packageName = $args[0]
+        $manifestPaths = [System.Collections.Generic.List[string]]::new()
+
+        Get-AppxPackage -AllUsers -Name $packageName -ErrorAction SilentlyContinue |
+            Sort-Object -Property Version -Descending |
+            ForEach-Object {
+                if (-not [string]::IsNullOrWhiteSpace($_.InstallLocation)) {
+                    $manifestPaths.Add((Join-Path $_.InstallLocation "AppxManifest.xml"))
+                }
+            }
+
+        Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+            Where-Object DisplayName -EQ $packageName |
+            ForEach-Object {
+                if (-not [string]::IsNullOrWhiteSpace($_.InstallLocation)) {
+                    $manifestPaths.Add((Join-Path $_.InstallLocation "AppxManifest.xml"))
+                }
+            }
+
+        $manifestPath = $manifestPaths |
+            Select-Object -Unique |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+
+        if ($null -ne $manifestPath) {
+            Add-AppxPackage -Register $manifestPath -DisableDevelopmentMode -ErrorAction Stop
+            Write-Output $manifestPath
+        }
+    }
+
+    $manifestOutput = powershell.exe -NoProfile -NonInteractive -Command $ps5Command -args $Name 2>&1
+    if ($LASTEXITCODE -eq 0 -and $null -ne $manifestOutput) {
+        $manifestPath = ($manifestOutput | Select-Object -Last 1).ToString().Trim()
+        if (-not [string]::IsNullOrWhiteSpace($manifestPath)) {
+            Write-WinUtilLog -Component "AppX" -Message "Registered local AppX manifest for $Name`: $manifestPath"
+            return
+        }
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        $failureDetails = ($manifestOutput | Out-String).Trim()
+        Write-WinUtilLog -Level "WARN" -Component "AppX" -Message "Local AppX registration failed for $Name`: $failureDetails"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($StoreId)) {
+        $errorMessage = "Unable to install $Name because no local manifest or Microsoft Store ID is available."
+        Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message $errorMessage
+        throw $errorMessage
+    }
+
+    Write-WinUtilLog -Component "AppX" -Message "No usable local manifest found for $Name. Installing Microsoft Store product $StoreId."
+    Install-WinUtilWinget
+    Install-WinUtilProgramWinget -Action Install -Programs @("msstore:$StoreId")
 }
 
 function Install-WinUtilChoco {
@@ -1513,32 +1547,36 @@ Function Invoke-WinUtilCurrentSystem {
     )
     if ($CheckBox -eq "choco") {
         $apps = (choco list | Select-String -Pattern "^\S+").Matches.Value
-        $filter = Get-WinUtilVariables -Type Checkbox | Where-Object {$psitem -like "WPFInstall*"}
-        $sync.GetEnumerator() | Where-Object {$psitem.Key -in $filter} | ForEach-Object {
-            $dependencies = @($sync.configs.applications.$($psitem.Key).choco -split ";")
-            if ($dependencies -in $apps) {
-                Write-Output $psitem.name
+        $sync.configs.applicationsHashtable.GetEnumerator() | ForEach-Object {
+            $packageId = ($_.Value.choco -split ";")[-1].Trim()
+            if ($packageId -ne "na" -and $packageId -in $apps) {
+                Write-Output $_.Key
             }
         }
     }
 
     if ($checkbox -eq "winget") {
-
         $originalEncoding = [Console]::OutputEncoding
-        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-        $Sync.InstalledPrograms = @("winget", "msstore") | ForEach-Object {
-            winget list -s $psitem | Select-Object -skip 3 | ConvertFrom-String -PropertyNames "Name", "Id", "Version", "Available" -Delimiter '\s{2,}'
+        try {
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+            $installedProgramOutput = @(winget list --accept-source-agreements --disable-interactivity 2>&1)
+            if ($LASTEXITCODE -ne 0) {
+                throw "winget list failed with exit code $LASTEXITCODE."
+            }
+        } finally {
+            [Console]::OutputEncoding = $originalEncoding
         }
-        [Console]::OutputEncoding = $originalEncoding
+        $installedProgramText = $installedProgramOutput -join "`n"
 
-        $filter = Get-WinUtilVariables -Type Checkbox | Where-Object {$psitem -like "WPFInstall*"}
-        $sync.GetEnumerator() | Where-Object {$psitem.Key -in $filter} | ForEach-Object {
-            $dependencies = @($sync.configs.applications.$($psitem.Key).winget -split ";") | ForEach-Object {
-                $psitem -replace "^msstore:", ""
+        $sync.configs.applicationsHashtable.GetEnumerator() | ForEach-Object {
+            $packageId = (($_.Value.winget -split ";")[-1] -replace "^msstore:", "").Trim()
+            if ([string]::IsNullOrWhiteSpace($packageId) -or $packageId -eq "na") {
+                return
             }
 
-            if ($dependencies[-1] -in $sync.InstalledPrograms.Id) {
-                Write-Output $psitem.name
+            $packagePattern = "(?im)[^\S\r\n]{2,}$([regex]::Escape($packageId))(?=[^\S\r\n]{2,}|$)"
+            if ($installedProgramText -match $packagePattern) {
+                Write-Output $_.Key
             }
         }
     }
@@ -1835,7 +1873,7 @@ function Invoke-WinUtilISOMountAndVerify {
     }
 
     Write-Win11ISOLog "Mounting ISO: $isoPath"
-    Set-WinUtilProgressBar -Label "Mounting ISO..." -Percent 10
+    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Mounting ISO..." -Percent 10
 
     try {
         Mount-DiskImage -ImagePath $isoPath
@@ -1847,7 +1885,7 @@ function Invoke-WinUtilISOMountAndVerify {
         $driveLetter = (Get-DiskImage -ImagePath $isoPath | Get-Volume).DriveLetter + ":"
         Write-Win11ISOLog "Mounted at drive $driveLetter"
 
-        Set-WinUtilProgressBar -Label "Verifying ISO contents..." -Percent 30
+        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Verifying ISO contents..." -Percent 30
 
         $wimPath = Join-Path $driveLetter "sources\install.wim"
         $esdPath = Join-Path $driveLetter "sources\install.esd"
@@ -1858,13 +1896,13 @@ function Invoke-WinUtilISOMountAndVerify {
             [System.Windows.MessageBox]::Show(
                 "這似乎不是有效的 Windows ISO。`n`n找不到 install.wim / install.esd。",
                 "無效的 ISO", "OK", "Error")
-            Set-WinUtilProgressBar -Label "" -Percent 0
+            Set-WinUtilTweaksProgressIndicator -Visible $false
             return
         }
 
         $activeWim = if (Test-Path $wimPath) { $wimPath } else { $esdPath }
 
-        Set-WinUtilProgressBar -Label "Reading image metadata..." -Percent 55
+        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Reading image metadata..." -Percent 55
         $imageInfo = Get-WindowsImage -ImagePath $activeWim | Select-Object ImageIndex, ImageName
 
         if (-not ($imageInfo | Where-Object { $_.ImageName -match "Windows 11" })) {
@@ -1873,7 +1911,7 @@ function Invoke-WinUtilISOMountAndVerify {
             [System.Windows.MessageBox]::Show(
                 "在此 ISO 中找不到任何 Windows 11 版本。`n`n僅支援官方的 Windows 11 ISO。",
                 "並非 Windows 11 ISO", "OK", "Error")
-            Set-WinUtilProgressBar -Label "" -Percent 0
+            Set-WinUtilTweaksProgressIndicator -Visible $false
             return
         }
 
@@ -1902,7 +1940,7 @@ function Invoke-WinUtilISOMountAndVerify {
         $sync["Win11ISOImagePath"]   = $isoPath
         $sync["WPFWin11ISOModifySection"].Visibility = "Visible"
 
-        Set-WinUtilProgressBar -Label "ISO verified" -Percent 100
+        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "ISO verified" -Percent 100
         Write-Win11ISOLog "ISO verified OK.  Editions found: $($imageInfo.Count)"
     } catch {
         Write-Win11ISOLog "ERROR during mount/verify: $_"
@@ -1911,7 +1949,7 @@ function Invoke-WinUtilISOMountAndVerify {
             "錯誤", "OK", "Error")
     } finally {
         Start-Sleep -Milliseconds 800
-        Set-WinUtilProgressBar -Label "" -Percent 0
+        Set-WinUtilTweaksProgressIndicator -Visible $false
     }
 }
 
@@ -1939,6 +1977,7 @@ function Invoke-WinUtilISOModify {
 
     $sync["WPFWin11ISOModifyButton"].IsEnabled = $false
     $sync["Win11ISOModifying"] = $true
+    $sync["Win11ISOProcessRunning"] = $true
 
     $workDir = Join-Path $env:TEMP "WinUtil_Win11ISO_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
     if (Test-Path $workDir) {
@@ -1991,9 +2030,10 @@ function Invoke-WinUtilISOModify {
 
         function SetProgress($label, $pct) {
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = $label
-                $sync.progressBarTextBlock.ToolTip = $label
-                $sync.ProgressBar.Value            = [Math]::Max($pct, 5)
+                $sync["WPFTweaksProgressBar"].Visibility = "Visible"
+                $sync["WPFTweaksProgressLabel"].Text      = $label
+                $sync["WPFTweaksProgressLabel"].ToolTip   = $label
+                $sync["WPFTweaksProgressValue"].Value     = [Math]::Max($pct, 5)
             })
         }
 
@@ -2240,10 +2280,12 @@ function Invoke-WinUtilISOModify {
         } finally {
             Start-Sleep -Milliseconds 800
             $sync["Win11ISOModifying"] = $false
+            $sync["Win11ISOProcessRunning"] = $false
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = ""
-                $sync.progressBarTextBlock.ToolTip = ""
-                $sync.ProgressBar.Value            = 0
+                $sync["WPFTweaksProgressBar"].Visibility = "Collapsed"
+                $sync["WPFTweaksProgressLabel"].Text      = ""
+                $sync["WPFTweaksProgressLabel"].ToolTip   = ""
+                $sync["WPFTweaksProgressValue"].Value     = 0
                 $sync["WPFWin11ISOModifyButton"].IsEnabled = $true
                 if ($sync["WPFWin11ISOOutputSection"].Visibility -ne "Visible") {
                     $sync["WPFWin11ISOSelectSection"].Visibility = "Visible"
@@ -2302,6 +2344,7 @@ function Invoke-WinUtilISOCleanAndReset {
     }
 
     $sync["WPFWin11ISOCleanResetButton"].IsEnabled = $false
+    $sync["Win11ISOProcessRunning"] = $true
 
     $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
     $runspace.ApartmentState = "STA"
@@ -2326,9 +2369,10 @@ function Invoke-WinUtilISOCleanAndReset {
 
         function SetProgress($label, $pct) {
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = $label
-                $sync.progressBarTextBlock.ToolTip = $label
-                $sync.ProgressBar.Value            = [Math]::Max($pct, 5)
+                $sync["WPFTweaksProgressBar"].Visibility = "Visible"
+                $sync["WPFTweaksProgressLabel"].Text      = $label
+                $sync["WPFTweaksProgressLabel"].ToolTip   = $label
+                $sync["WPFTweaksProgressValue"].Value     = [Math]::Max($pct, 5)
             })
         }
 
@@ -2416,20 +2460,24 @@ function Invoke-WinUtilISOCleanAndReset {
                 $sync["WPFWin11ISOModifyButton"].IsEnabled       = $true
                 $sync["WPFWin11ISOCleanResetButton"].IsEnabled   = $true
 
-                $sync.progressBarTextBlock.Text    = ""
-                $sync.progressBarTextBlock.ToolTip = ""
-                $sync.ProgressBar.Value            = 0
+                $sync["WPFTweaksProgressBar"].Visibility = "Collapsed"
+                $sync["WPFTweaksProgressLabel"].Text      = ""
+                $sync["WPFTweaksProgressLabel"].ToolTip   = ""
+                $sync["WPFTweaksProgressValue"].Value     = 0
 
                 $sync["WPFWin11ISOStatusLog"].Text   = "已就緒。請選擇一個 Windows 11 ISO 以開始。"
             })
         } catch {
             Log "ERROR during Clean & Reset: $_"
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = ""
-                $sync.progressBarTextBlock.ToolTip = ""
-                $sync.ProgressBar.Value            = 0
+                $sync["WPFTweaksProgressBar"].Visibility = "Collapsed"
+                $sync["WPFTweaksProgressLabel"].Text      = ""
+                $sync["WPFTweaksProgressLabel"].ToolTip   = ""
+                $sync["WPFTweaksProgressValue"].Value     = 0
                 $sync["WPFWin11ISOCleanResetButton"].IsEnabled = $true
             })
+        } finally {
+            $sync["Win11ISOProcessRunning"] = $false
         }
     })
 
@@ -2494,6 +2542,7 @@ function Invoke-WinUtilISOExport {
     }
 
     $sync["WPFWin11ISOChooseISOButton"].IsEnabled = $false
+    $sync["Win11ISOProcessRunning"] = $true
 
     $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
     $runspace.ApartmentState = "STA"
@@ -2514,9 +2563,10 @@ function Invoke-WinUtilISOExport {
 
         function SetProgress($label, $pct) {
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = $label
-                $sync.progressBarTextBlock.ToolTip = $label
-                $sync.ProgressBar.Value            = [Math]::Max($pct, 5)
+                $sync["WPFTweaksProgressBar"].Visibility = "Visible"
+                $sync["WPFTweaksProgressLabel"].Text      = $label
+                $sync["WPFTweaksProgressLabel"].ToolTip   = $label
+                $sync["WPFTweaksProgressValue"].Value     = [Math]::Max($pct, 5)
             })
         }
 
@@ -2576,10 +2626,12 @@ function Invoke-WinUtilISOExport {
             })
         } finally {
             Start-Sleep -Milliseconds 800
+            $sync["Win11ISOProcessRunning"] = $false
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = ""
-                $sync.progressBarTextBlock.ToolTip = ""
-                $sync.ProgressBar.Value            = 0
+                $sync["WPFTweaksProgressBar"].Visibility = "Collapsed"
+                $sync["WPFTweaksProgressLabel"].Text      = ""
+                $sync["WPFTweaksProgressLabel"].ToolTip   = ""
+                $sync["WPFTweaksProgressValue"].Value     = 0
                 $sync["WPFWin11ISOChooseISOButton"].IsEnabled = $true
             })
         }
@@ -3160,6 +3212,7 @@ function Invoke-WinUtilISOWriteUSB {
     }
 
     $sync["WPFWin11ISOWriteUSBButton"].IsEnabled = $false
+    $sync["Win11ISOProcessRunning"] = $true
     Write-Win11ISOLog "Starting USB write to Disk $diskNum..."
 
     $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
@@ -3185,9 +3238,10 @@ function Invoke-WinUtilISOWriteUSB {
 
         function SetProgress($label, $pct) {
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = $label
-                $sync.progressBarTextBlock.ToolTip = $label
-                $sync.ProgressBar.Value            = [Math]::Max($pct, 5)
+                $sync["WPFTweaksProgressBar"].Visibility = "Visible"
+                $sync["WPFTweaksProgressLabel"].Text      = $label
+                $sync["WPFTweaksProgressLabel"].ToolTip   = $label
+                $sync["WPFTweaksProgressValue"].Value     = [Math]::Max($pct, 5)
             })
         }
 
@@ -3354,10 +3408,12 @@ function Invoke-WinUtilISOWriteUSB {
             })
         } finally {
             Start-Sleep -Milliseconds 800
+            $sync["Win11ISOProcessRunning"] = $false
             $sync["WPFWin11ISOStatusLog"].Dispatcher.Invoke([action]{
-                $sync.progressBarTextBlock.Text    = ""
-                $sync.progressBarTextBlock.ToolTip = ""
-                $sync.ProgressBar.Value            = 0
+                $sync["WPFTweaksProgressBar"].Visibility = "Collapsed"
+                $sync["WPFTweaksProgressLabel"].Text      = ""
+                $sync["WPFTweaksProgressLabel"].ToolTip   = ""
+                $sync["WPFTweaksProgressValue"].Value     = 0
                 $sync["WPFWin11ISOWriteUSBButton"].IsEnabled = $true
             })
         }
@@ -3834,8 +3890,9 @@ function Remove-WinUtilProvisionedAPPX {
     $removalOutput = powershell.exe -NoProfile -NonInteractive -Command $ps5Command -args $PackageList 2>&1
     if ($LASTEXITCODE -ne 0 -or $null -ne $removalOutput) {
         $failureDetails = ($removalOutput | Out-String).Trim()
-        Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message "AppX provisioned package removal failed: $failureDetails"
-        return
+        $errorMessage = "AppX provisioned package removal failed: $failureDetails"
+        Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message $errorMessage
+        throw $errorMessage
     }
 
     Write-WinUtilLog -Component "AppX" -Message "AppX provisioned package removal completed."
@@ -3912,6 +3969,84 @@ function Reset-WPFCheckBoxes {
     }
 }
 
+function Save-WinUtilFile {
+    <#
+    .SYNOPSIS
+        Downloads a file and reports transfer progress.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [uri]$Uri,
+
+        [Parameter(Mandatory)]
+        [string]$DestinationPath,
+
+        [Parameter(Mandatory)]
+        [scriptblock]$ProgressCallback
+    )
+
+    $response = $null
+    $responseStream = $null
+    $outputStream = $null
+
+    try {
+        $request = [System.Net.WebRequest]::Create($Uri)
+        $response = $request.GetResponse()
+        $totalBytes = $response.ContentLength
+        $responseStream = $response.GetResponseStream()
+        $outputStream = [System.IO.File]::Create($DestinationPath)
+        $buffer = New-Object byte[] 81920
+        $downloadedBytes = 0L
+        $lastPercent = -1
+
+        while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outputStream.Write($buffer, 0, $bytesRead)
+            $downloadedBytes += $bytesRead
+
+            if ($totalBytes -gt 0) {
+                $percent = [Math]::Min(100, [int](($downloadedBytes / $totalBytes) * 100))
+                if ($percent -ne $lastPercent) {
+                    & $ProgressCallback $percent
+                    $lastPercent = $percent
+                }
+            }
+        }
+
+        if ($lastPercent -ne 100) {
+            & $ProgressCallback 100
+        }
+    }
+    finally {
+        if ($null -ne $outputStream) {
+            $outputStream.Dispose()
+        }
+        if ($null -ne $responseStream) {
+            $responseStream.Dispose()
+        }
+        if ($null -ne $response) {
+            $response.Dispose()
+        }
+    }
+}
+
+function Set-WinUtilAppCategoryFilter {
+    <#
+        .SYNOPSIS
+            Applies an exact application category filter from an Install tab search chip.
+
+        .PARAMETER Category
+            The application category to show. An empty value clears the filter.
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Category = ""
+    )
+
+    $sync.SearchBar.Tag = $Category
+    $sync.SearchBar.Text = $Category
+    Find-AppsByNameOrDescription -SearchString $Category -Category $Category
+}
+
 function Set-WinUtilDNS {
     <#
 
@@ -3966,33 +4101,6 @@ function Set-WinUtilDNS {
         Write-Warning $psitem.Exception.StackTrace
         Write-WinUtilLog -Level "ERROR" -Component "DNS" -Message "Unable to set DNS provider $DNSProvider`: $($psitem.Exception.Message)"
     }
-}
-
-function Set-WinUtilProgressbar{
-    <#
-    .SYNOPSIS
-        This function is used to Update the Progress Bar displayed in the winutil GUI.
-        It will be automatically hidden if the user clicks something and no process is running
-    .PARAMETER Label
-        The Text to be overlaid onto the Progress Bar
-    .PARAMETER PERCENT
-        The percentage of the Progress Bar that should be filled (0-100)
-    #>
-    param(
-        [string]$Label,
-        [ValidateRange(0,100)]
-        [int]$Percent
-    )
-
-    $progressLabel = $Label
-
-    Invoke-WPFUIThread -ScriptBlock {$sync.progressBarTextBlock.Text = $progressLabel}
-    Invoke-WPFUIThread -ScriptBlock {$sync.progressBarTextBlock.ToolTip = $progressLabel}
-    if ($Percent -lt 5 ) {
-        $Percent = 5 # Ensure the progress bar is not empty, as it looks weird
-    }
-    Invoke-WPFUIThread -ScriptBlock { $sync.ProgressBar.Value = $Percent}
-
 }
 
 function Set-WinUtilRegistry {
@@ -4205,6 +4313,42 @@ function Set-WinUtilTaskbaritem {
 
     if ($description) {
         $sync["Form"].taskbarItemInfo.Description = $description
+    }
+}
+
+function Set-WinUtilTweaksProgressIndicator {
+    <#
+    .SYNOPSIS
+        Shows, updates, or hides the window-level progress indicator used by long-running
+        workflows such as app management, Tweaks, AppX management, and Win11 Creator.
+        It lives outside the TabControl, so it stays visible no matter which tab is active.
+    .PARAMETER Visible
+        Whether the indicator should be shown or hidden.
+    .PARAMETER Label
+        The text to display above the progress bar.
+    .PARAMETER Percent
+        The percentage of the progress bar that should be filled (0-100).
+    #>
+    param(
+        [bool]$Visible,
+        [string]$Label,
+        [ValidateRange(0,100)]
+        [int]$Percent
+    )
+
+    $indicatorVisible = if ($Visible) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+    $indicatorLabel = $Label
+    $hasLabel = $PSBoundParameters.ContainsKey('Label')
+    $hasPercent = $PSBoundParameters.ContainsKey('Percent')
+
+    Invoke-WPFUIThread -ScriptBlock {
+        $sync.WPFTweaksProgressBar.Visibility = $indicatorVisible
+        if ($hasLabel) {
+            $sync.WPFTweaksProgressLabel.Text = $indicatorLabel
+        }
+        if ($hasPercent) {
+            $sync.WPFTweaksProgressValue.Value = $Percent
+        }
     }
 }
 
@@ -4517,30 +4661,6 @@ function Show-WinUtilMessage {
     [System.Windows.MessageBox]::Show($Message, $Title, $Button, $Icon)
 }
 
-function Show-WPFInstallAppBusy {
-    <#
-    .SYNOPSIS
-        Displays a busy overlay in the install app area of the WPF form.
-        This is used to indicate that an install or uninstall is in progress.
-        Dynamically updates the size of the overlay based on the app area on each invocation.
-    .PARAMETER text
-        The text to display in the busy overlay. Defaults to "Installing apps...".
-    #>
-    param (
-        $text = "Installing apps..."
-    )
-    $overlayText = $text
-
-    Invoke-WPFUIThread -ScriptBlock {
-        $sync.InstallAppAreaOverlay.Visibility = [Windows.Visibility]::Visible
-        $sync.InstallAppAreaOverlay.Width = $($sync.InstallAppAreaScrollViewer.ActualWidth * 0.4)
-        $sync.InstallAppAreaOverlay.Height = $($sync.InstallAppAreaScrollViewer.ActualWidth * 0.4)
-        $sync.InstallAppAreaOverlayText.Text = $overlayText
-        $sync.InstallAppAreaBorder.IsEnabled = $false
-        $sync.InstallAppAreaScrollViewer.Effect.Radius = 5
-    }
-}
-
 function Invoke-WinUtilInstallAppRenderBatch {
     param(
         [Parameter(Mandatory = $true)]
@@ -4552,7 +4672,7 @@ function Invoke-WinUtilInstallAppRenderBatch {
     }
 
     if ($sync.currentTab -eq "Install" -and $sync.SearchBar -and -not [string]::IsNullOrWhiteSpace($sync.SearchBar.Text)) {
-        Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text
+        Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Category $sync.SearchBar.Tag
     }
 }
 
@@ -4909,61 +5029,173 @@ function Invoke-WinUtilAutoRun {
     Write-Host "Done."
 }
 
+function Invoke-WPFAppxInstall {
+    if ($sync.ProcessRunning) {
+        Show-WinUtilMessage -Message "An AppX process is currently running." -Title "WinUtil" -Button "OK" -Icon "Warning"
+        return
+    }
+
+    if ($null -eq $sync.selectedAppx -or $sync.selectedAppx.Count -eq 0) {
+        Show-WinUtilMessage -Message "No AppX Package selected" -Title "Error" -Button "OK" -Icon "Error"
+        return
+    }
+
+    $selected = @($sync.selectedAppx)
+    $apps = $sync.configs.appxHashtable
+
+    $sync.ProcessRunning = $true
+    Invoke-WPFRunspace -ParameterList @(("selected", $selected), ("apps", $apps)) -ScriptBlock {
+        param($selected, $apps)
+
+        $totalPackages = @($selected).Count
+        $hasUI = $null -ne $sync.Form -and $null -ne $sync.Form.Dispatcher
+
+        try {
+            Write-WinUtilLog -Component "AppX" -Message "Starting AppX install for $totalPackages selected package(s)."
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Preparing AppX install (0/$totalPackages)" -Percent 0
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Normal" -value 0.01 -overlay "logo" }
+            }
+
+            for ($index = 0; $index -lt $totalPackages; $index++) {
+                $key = $selected[$index]
+                $app = $apps[$key]
+                $position = $index + 1
+                $startPercent = [int](($index / $totalPackages) * 100)
+
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Installing $($app.Content) ($position/$totalPackages)" -Percent $startPercent
+                }
+                Write-Host "Installing $($app.Content)"
+                Install-WinUtilAPPX -Name $app.PackageId -StoreId $app.StoreId
+
+                $completedPercent = [int](($position / $totalPackages) * 100)
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Installed $($app.Content) ($position/$totalPackages)" -Percent $completedPercent
+                    Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value ($completedPercent / 100) }
+                }
+            }
+
+            Write-Host "================================="
+            Write-Host "--   AppX Install Finished   ---"
+            Write-Host "================================="
+            Write-WinUtilLog -Component "AppX" -Message "AppX install finished."
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "AppX install finished" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
+            }
+        }
+        catch {
+            Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message "AppX install failed: $($_.Exception.Message)"
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "AppX install failed" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+            }
+        }
+        finally {
+            $sync.ProcessRunning = $false
+        }
+    }
+}
+
 function Invoke-WPFAppxRemoval {
+    if ($sync.ProcessRunning) {
+        Show-WinUtilMessage -Message "An AppX process is currently running." -Title "WinUtil" -Button "OK" -Icon "Warning"
+        return
+    }
+
     if ($null -eq $sync.selectedAppx -or $sync.selectedAppx.Count -eq 0) {
         Show-WinUtilMessage -Message "未選擇任何 AppX 套件" -Title "錯誤" -Button "OK" -Icon "Error"
         return
     }
 
-    $selected = $sync.selectedAppx
+    $selected = @($sync.selectedAppx)
     $apps = $sync.configs.appxHashtable
 
+    $sync.ProcessRunning = $true
     Invoke-WPFRunspace -ParameterList @(("selected", $selected), ("apps", $apps)) -ScriptBlock {
         param($selected, $apps)
 
-        $sync.ProcessRunning = $true
-        Write-WinUtilLog -Component "AppX" -Message "Starting AppX removal for $(@($selected).Count) selected package(s)."
-
+        $totalPackages = @($selected).Count
+        $hasUI = $null -ne $sync.Form -and $null -ne $sync.Form.Dispatcher
         $packageList = [System.Collections.Generic.List[string]]::new()
 
-        foreach ($key in $selected) {
-            if ($key -eq "WPFAppxMicrosoft_XboxGamingOverlay") {
-                # Making sure Game Bar isn't running
-                Write-WinUtilLog -Component "AppX" -Message "Stopping GameBarFTServer before removing Xbox Gaming Overlay."
-                Stop-Process -Name GameBarFTServer -Force -Confirm:$false -ErrorAction SilentlyContinue
-
-                # This stops annoying ms-gamebar popup when launching games.
-                Write-WinUtilLog -Component "AppX" -Message "Disabling Game DVR capture before removing Xbox Gaming Overlay."
-                Set-ItemProperty -Path HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR -Name AppCaptureEnabled -Value 0
+        try {
+            Write-WinUtilLog -Component "AppX" -Message "Starting AppX removal for $totalPackages selected package(s)."
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Preparing AppX removal (0/$totalPackages)" -Percent 0
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Normal" -value 0.01 -overlay "logo" }
             }
 
-            if ($key -eq "WPFAppxMicrosoft_WindowsNotepad") {
-                Write-WinUtilLog -Component "AppX" -Message "Stopping dllhost before removing Notepad."
-                Stop-Process -Name dllhost -Force -Confirm:$false -ErrorAction SilentlyContinue
+            for ($index = 0; $index -lt $totalPackages; $index++) {
+                $key = $selected[$index]
+                $app = $apps[$key]
+                $position = $index + 1
+                $startPercent = [int](($index / $totalPackages) * 90)
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Removing $($app.Content) ($position/$totalPackages)" -Percent $startPercent
+                }
+
+                if ($key -eq "WPFAppxMicrosoft_XboxGamingOverlay") {
+                    # Making sure Game Bar isn't running
+                    Write-WinUtilLog -Component "AppX" -Message "Stopping GameBarFTServer before removing Xbox Gaming Overlay."
+                    Stop-Process -Name GameBarFTServer -Force -Confirm:$false -ErrorAction SilentlyContinue
+
+                    # This stops annoying ms-gamebar popup when launching games.
+                    Write-WinUtilLog -Component "AppX" -Message "Disabling Game DVR capture before removing Xbox Gaming Overlay."
+                    Set-ItemProperty -Path HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR -Name AppCaptureEnabled -Value 0
+                }
+
+                if ($key -eq "WPFAppxMicrosoft_WindowsNotepad") {
+                    Write-WinUtilLog -Component "AppX" -Message "Stopping dllhost before removing Notepad."
+                    Stop-Process -Name dllhost -Force -Confirm:$false -ErrorAction SilentlyContinue
+                }
+
+                Write-Host "Removing $($app.Content)"
+                Write-WinUtilLog -Component "AppX" -Message "Removing $($app.Content) ($($app.PackageId))."
+                Remove-WinUtilAPPX -Name $app.PackageId
+                $packageList.Add($app.PackageId)
+
+                if ($key -eq "WPFAppxMSTeams") {
+                    # Uninstalls Microsoft Teams Meeting Add-in for Microsoft Office
+                    Write-WinUtilLog -Component "AppX" -Message "Uninstalling Microsoft Teams meeting add-in package."
+                    Get-Package -Name "Microsoft Teams*" -ErrorAction SilentlyContinue | Uninstall-Package -Force
+                }
+
+                $completedPercent = [int](($position / $totalPackages) * 90)
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Removed $($app.Content) ($position/$totalPackages)" -Percent $completedPercent
+                    Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value ($completedPercent / 100) }
+                }
             }
 
-            Write-Host "Removing $($apps[$key].Content)"
-            Write-WinUtilLog -Component "AppX" -Message "Removing $($apps[$key].Content) ($($apps[$key].PackageId))."
-            Remove-WinUtilAPPX -Name $apps[$key].PackageId
-            $packageList.Add($apps[$key].PackageId)
+            if ($packageList.Count -gt 0) {
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Removing provisioned AppX packages" -Percent 90
+                }
+                Remove-WinUtilProvisionedAPPX -PackageList $packageList.ToArray()
+            }
 
-            if ($key -eq "WPFAppxMSTeams") {
-                # Uninstalls Microsoft Teams Meeting Add-in for Microsoft Office
-                Write-WinUtilLog -Component "AppX" -Message "Uninstalling Microsoft Teams meeting add-in package."
-                Get-Package -Name "Microsoft Teams*" -ErrorAction SilentlyContinue | Uninstall-Package -Force
+            Write-Host "================================="
+            Write-Host "--   AppX Removal Finished   ---"
+            Write-Host "================================="
+            Write-WinUtilLog -Component "AppX" -Message "AppX removal finished."
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "AppX removal finished" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
             }
         }
-
-        if ($packageList.Count -gt 0) {
-            Remove-WinUtilProvisionedAPPX -PackageList $packageList.ToArray()
+        catch {
+            Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message "AppX removal failed: $($_.Exception.Message)"
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "AppX removal failed" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+            }
+        }
+        finally {
+            $sync.ProcessRunning = $false
         }
 
-        Write-Host "================================="
-        Write-Host "--   AppX Removal Finished   ---"
-        Write-Host "================================="
-        Write-WinUtilLog -Component "AppX" -Message "AppX removal finished."
-
-        $sync.ProcessRunning = $false
     }
 }
 
@@ -4983,8 +5215,8 @@ function Invoke-WPFButton {
 
     # Use this to get the name of the button
     #[System.Windows.MessageBox]::Show("$Button","Chris Titus Tech's Windows Utility","OK","Info")
-    if (-not $sync.ProcessRunning) {
-        Set-WinUtilProgressBar  -label "" -percent 0
+    if (-not $sync.ProcessRunning -and -not $sync.Win11ISOProcessRunning) {
+        Set-WinUtilTweaksProgressIndicator -Visible $false
     }
 
     # Check if button is defined in feature config with function or InvokeScript
@@ -5036,6 +5268,7 @@ function Invoke-WPFButton {
         "WPFGetInstalledTweaks" {Invoke-WPFGetInstalled -CheckBox "tweaks"}
         "WPFAppxRemoval" {Invoke-WPFTab "WPFTab6BT"}
         "WPFBackToTweaks" {Invoke-WPFTab "WPFTab2BT"}
+        "WPFInstallSelectedAppx" {Invoke-WPFAppxInstall}
         "WPFRemoveSelectedAppx" {Invoke-WPFAppxRemoval}
         "WPFDefaultAppxSelection" {Invoke-WPFPresets "AppxDefault" -checkboxfilterpattern "WPFAppx*"}
         "WPFSelectAllAppx" {
@@ -5045,7 +5278,7 @@ function Invoke-WPFButton {
             $sync.configs.appxHashtable.Keys | ForEach-Object {$sync.$_.IsChecked = $false}
         }
         "WPFGetInstalledAppx" {
-            $installedAppxPackages = Get-AppxPackage -AllUsers | Select-Object -ExpandProperty Name
+            $installedAppxPackages = Get-WinUtilInstalledAPPX
             foreach ($appx in $sync.configs.appxHashtable.GetEnumerator()) {
                 if ($appx.Value.PackageId -in $installedAppxPackages) {
                     $sync.$($appx.Key).IsChecked = $true
@@ -5054,6 +5287,13 @@ function Invoke-WPFButton {
         }
         "WPFCloseButton" {$sync.Form.Close(); Write-Host "Bye bye!"}
         "WPFMinimizeButton" {$sync.Form.WindowState = [Windows.WindowState]::Minimized}
+        "WPFMaximizeButton" {
+            if ($sync.Form.WindowState -eq [Windows.WindowState]::Normal) {
+                $sync.Form.WindowState = [Windows.WindowState]::Maximized
+            } else {
+                $sync.Form.WindowState = [Windows.WindowState]::Normal
+            }
+        }
         "WPFselectedAppsButton" {$sync.selectedAppsPopup.IsOpen = -not $sync.selectedAppsPopup.IsOpen}
     }
 }
@@ -5379,7 +5619,6 @@ function Invoke-WPFFixesWinget {
 
 function Invoke-WPFGetInstalled {
     <#
-    TODO: Add the Option to use Chocolatey as Engine
     .SYNOPSIS
         Invokes the function that gets the checkboxes to check in a new runspace
 
@@ -5398,36 +5637,73 @@ function Invoke-WPFGetInstalled {
         return
     }
     $managerPreference = $sync.preferences.packagemanager
-
-    Invoke-WPFRunspace -ParameterList @(("managerPreference", $managerPreference),("checkbox", $checkbox)) -ScriptBlock {
-        param (
-            [string]$checkbox,
-            [string]$managerPreference
+    $operation = [Hashtable]::Synchronized(@{
+        Checkboxes = @()
+        Error = $null
+    })
+    $completeAction = [Action[hashtable, string]]{
+        param(
+            [hashtable]$completedOperation,
+            [string]$completedCheckbox
         )
-        $sync.ProcessRunning = $true
-        Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Indeterminate" }
+        try {
+            if ($completedOperation.Error) {
+                Write-WinUtilLog -Level "ERROR" -Component "Install" -Message "Get installed state failed: $($completedOperation.Error)"
+                Write-Warning "Unable to get installed state: $($completedOperation.Error)"
+                return
+            }
 
-        if ($checkbox -eq "winget") {
-            Write-Host "Getting Installed Programs..."
-            switch ($managerPreference) {
-                "Choco"{$Checkboxes = Invoke-WinUtilCurrentSystem -CheckBox "choco"; break}
-                "Winget"{$Checkboxes = Invoke-WinUtilCurrentSystem -CheckBox $checkbox; break}
+            if ($completedCheckbox -eq "winget") {
+                foreach ($checkboxName in $completedOperation.Checkboxes) {
+                    if (-not $sync.selectedApps.Contains($checkboxName)) {
+                        $sync.selectedApps.Add($checkboxName)
+                    }
+                }
+                Reset-WPFCheckBoxes -checkboxfilterpattern "WPFInstall*"
+            } else {
+                foreach ($checkboxName in $completedOperation.Checkboxes) {
+                    $sync.$checkboxName.ischecked = $True
+                }
+            }
+        } finally {
+            $sync.ProcessRunning = $false
+            Set-WinUtilTaskbaritem -state "None"
+        }
+    }
+
+    $sync.ProcessRunning = $true
+    Set-WinUtilTaskbaritem -state "Indeterminate"
+    try {
+        Invoke-WPFRunspace -ParameterList @(
+            ("managerPreference", $managerPreference),
+            ("checkbox", $checkbox),
+            ("operation", $operation),
+            ("completeAction", $completeAction)
+        ) -ScriptBlock {
+            param (
+                [string]$checkbox,
+                [string]$managerPreference,
+                [hashtable]$operation,
+                [Action[hashtable, string]]$completeAction
+            )
+            try {
+                if ($checkbox -eq "winget") {
+                    switch ($managerPreference) {
+                        "Choco" { $operation.Checkboxes = @(Invoke-WinUtilCurrentSystem -CheckBox "choco"); break }
+                        "Winget" { $operation.Checkboxes = @(Invoke-WinUtilCurrentSystem -CheckBox $checkbox); break }
+                    }
+                } elseif ($checkbox -eq "tweaks") {
+                    $operation.Checkboxes = @(Invoke-WinUtilCurrentSystem -CheckBox $checkbox)
+                }
+            } catch {
+                $operation.Error = $_.Exception.Message
+            } finally {
+                $sync.Form.Dispatcher.BeginInvoke($completeAction, [object[]]@($operation, $checkbox)) | Out-Null
             }
         }
-        elseif ($checkbox -eq "tweaks") {
-            Write-Host "Getting Installed Tweaks..."
-            $Checkboxes = Invoke-WinUtilCurrentSystem -CheckBox $checkbox
-        }
-
-        $sync.form.Dispatcher.invoke({
-            foreach ($checkbox in $Checkboxes) {
-                $sync.$checkbox.ischecked = $True
-            }
-        })
-
-        Write-Host "Done..."
-        $sync.ProcessRunning = $false
-        Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" }
+    } catch {
+        $operation.Error = $_.Exception.Message
+        $completeAction.Invoke($operation, $checkbox)
     }
 }
 
@@ -5571,33 +5847,81 @@ function Invoke-WPFInstall {
 
         $packagesWinget = $packagesSorted['Winget']
         $packagesChoco = $packagesSorted['Choco']
+        $totalPackages = @($packagesWinget).Count + @($packagesChoco).Count
+        $completedPackages = 0
+        $hasUI = $null -ne $sync.Form -and $null -ne $sync.Form.Dispatcher
         Write-WinUtilLog -Component "Install" -Message "Install package manager split: winget=$(@($packagesWinget).Count), choco=$(@($packagesChoco).Count)"
 
         try {
             $sync.ProcessRunning = $true
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Preparing app install (0/$totalPackages)" -Percent 0
+                Invoke-WPFUIThread -ScriptBlock {
+                    if ($null -ne $sync.ItemsControl) {
+                        $sync.ItemsControl.IsEnabled = $false
+                    }
+                }
+            }
+
             if($packagesWinget.Count -gt 0 -and $packagesWinget -ne "0") {
-                Show-WPFInstallAppBusy -text "正在安裝應用程式..."
                 Install-WinUtilWinget
-                Install-WinUtilProgramWinget -Action Install -Programs $packagesWinget
+                foreach ($program in $packagesWinget) {
+                    $position = $completedPackages + 1
+                    $startPercent = [int](($completedPackages / $totalPackages) * 100)
+                    if ($hasUI) {
+                        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Installing $program ($position/$totalPackages)" -Percent $startPercent
+                    }
+
+                    Install-WinUtilProgramWinget -Action Install -Programs @($program)
+                    $completedPackages++
+                    $completedPercent = [int](($completedPackages / $totalPackages) * 100)
+                    if ($hasUI) {
+                        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Installed $program ($completedPackages/$totalPackages)" -Percent $completedPercent
+                        Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value ($completedPercent / 100) }
+                    }
+                }
             }
             if($packagesChoco.Count -gt 0) {
+                $position = $completedPackages + 1
+                $startPercent = [int](($completedPackages / $totalPackages) * 100)
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Installing Chocolatey packages ($position/$totalPackages)" -Percent $startPercent
+                }
+
                 Install-WinUtilChoco
                 Install-WinUtilProgramChoco -Action Install -Programs $packagesChoco
+                $completedPackages += @($packagesChoco).Count
+                $completedPercent = [int](($completedPackages / $totalPackages) * 100)
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Installed Chocolatey packages ($completedPackages/$totalPackages)" -Percent $completedPercent
+                    Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value ($completedPercent / 100) }
+                }
             }
-            Hide-WPFInstallAppBusy
             Write-Host "==========================================="
             Write-Host "--      Installs have finished          ---"
             Write-Host "==========================================="
             Write-WinUtilLog -Component "Install" -Message "Install workflow completed."
-            Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "App install finished" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
+            }
         } catch {
-            Hide-WPFInstallAppBusy
             Write-Host "==========================================="
             Write-Host "Error: $_"
             Write-Host "==========================================="
             Write-WinUtilLog -Level "ERROR" -Component "Install" -Message "Install workflow failed: $($_.Exception.Message)"
-            Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "App install failed" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+            }
         } finally {
+            if ($hasUI) {
+                Invoke-WPFUIThread -ScriptBlock {
+                    if ($null -ne $sync.ItemsControl) {
+                        $sync.ItemsControl.IsEnabled = $true
+                    }
+                }
+            }
             $sync.ProcessRunning = $False
         }
     }
@@ -5626,15 +5950,53 @@ function Invoke-WPFInstallUpgrade {
 }
 
 function Invoke-WPFOOSU {
-    try {
-        $ProgressPreference = 'SilentlyContinue'
+    if ($sync.ProcessRunning) {
+        Show-WinUtilMessage -Message "Another process is currently running." -Title "WinUtil" -Button "OK" -Icon "Warning"
+        return
+    }
 
-        Invoke-WebRequest -Uri https://dl5.oo-software.com/files/ooshutup10/OOSU10.exe -OutFile "$winutildir\ooshutup10.exe"
-        Start-Process -FilePath "$winutildir\ooshutup10.exe"
+    $downloadPath = Join-Path $sync.winutildir "ooshutup10.exe"
+    $sync.ProcessRunning = $true
 
-        $ProgressPreference = 'Continue'
-    } catch {
-        Write-Error "Couldn't download O&O ShutUp10. Please make sure you have an active Internet connection."
+    Invoke-WPFRunspace -ParameterList @(,("downloadPath", $downloadPath)) -ScriptBlock {
+        param($downloadPath)
+
+        $hasUI = $null -ne $sync.Form -and $null -ne $sync.Form.Dispatcher
+
+        try {
+            Write-WinUtilLog -Component "OOSU" -Message "Downloading O&O ShutUp10++."
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Downloading O&O ShutUp10++ (0%)" -Percent 0
+            }
+
+            Save-WinUtilFile -Uri "https://dl5.oo-software.com/files/ooshutup10/OOSU10.exe" -DestinationPath $downloadPath -ProgressCallback {
+                param($percent)
+
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Downloading O&O ShutUp10++ ($percent%)" -Percent $percent
+                }
+            }
+
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Launching O&O ShutUp10++" -Percent 100
+            }
+            Start-Process -FilePath $downloadPath
+
+            Write-WinUtilLog -Component "OOSU" -Message "O&O ShutUp10++ launched."
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "O&O ShutUp10++ launched" -Percent 100
+            }
+        }
+        catch {
+            Write-WinUtilLog -Level "ERROR" -Component "OOSU" -Message "O&O ShutUp10++ download failed: $($_.Exception.Message)"
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "O&O ShutUp10++ download failed" -Percent 100
+            }
+            Write-Error "Couldn't download O&O ShutUp10. Please make sure you have an active Internet connection."
+        }
+        finally {
+            $sync.ProcessRunning = $false
+        }
     }
 }
 
@@ -5796,6 +6158,8 @@ public sealed class WinUtilRunspaceCleanupState
 
 public static class WinUtilRunspaceCleanup
 {
+    public static readonly System.Threading.WaitOrTimerCallback Callback = Cleanup;
+
     public static void Cleanup(object state, bool timedOut)
     {
         var cleanupState = state as WinUtilRunspaceCleanupState;
@@ -5841,8 +6205,7 @@ public static class WinUtilRunspaceCleanup
     $cleanupState = [WinUtilRunspaceCleanupState]::new()
     $cleanupState.PowerShell = $powershell
     $cleanupState.Handle = $handle
-    $cleanupCallback = [System.Delegate]::CreateDelegate([System.Threading.WaitOrTimerCallback], [WinUtilRunspaceCleanup], "Cleanup")
-    [System.Threading.ThreadPool]::RegisterWaitForSingleObject($handle.AsyncWaitHandle, $cleanupCallback, $cleanupState, -1, $true) | Out-Null
+    [System.Threading.ThreadPool]::RegisterWaitForSingleObject($handle.AsyncWaitHandle, [WinUtilRunspaceCleanup]::Callback, $cleanupState, -1, $true) | Out-Null
 
     # Return the handle
     return $handle
@@ -5857,16 +6220,22 @@ function Invoke-WPFSelectedCheckboxesUpdate ($type, $checkboxName) {
         '^WPFAppx'    { 'selectedAppx' }
     }
 
+    $selectionChanged = $false
     if ($type -eq "Add") {
         if (-not $sync.$listName.Contains($checkboxName)) {
             $sync.$listName.Add($checkboxName)
+            $selectionChanged = $true
         }
     } else {
-        $sync.$listName.Remove($checkboxName)
+        $selectionChanged = $sync.$listName.Remove($checkboxName)
     }
 
-    if ($listName -eq 'selectedApps' -and $sync.WPFselectedAppsButton) {
-        $sync.WPFselectedAppsButton.Content = "已選軟體: $($sync.selectedApps.Count)"
+    if ($listName -eq "selectedApps" -and $selectionChanged) {
+        $sync.WPFselectedAppsButton.Content = "Selected Apps: $($sync.selectedApps.Count)"
+        $sync.selectedAppsstackPanel.Children.Clear()
+        $sync.selectedApps | Sort-Object | ForEach-Object {
+            Add-SelectedAppsMenuItem -name $sync.configs.applicationsHashtable.$_.Content -key $_
+        }
     }
 }
 
@@ -6064,13 +6433,13 @@ function Invoke-WPFtweaksbutton {
         Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Normal" -value 0.01 -overlay "logo" }
     }
 
-    Set-WinUtilProgressBar -Label "Creating restore point" -Percent 0
+    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Creating restore point" -Percent 0
     Write-WinUtilLog -Component "Tweaks" -Message "Creating restore point before applying selected tweaks."
     Invoke-WinUtilTweaks $restorePointTweak
     $completedSteps = 1
 
     if ($tweaksToRun.Count -eq 0 -and $dnsProvider -eq "Default") {
-      Set-WinUtilProgressBar -Label "Tweaks finished" -Percent 100
+      Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Tweaks finished" -Percent 100
       $sync.ProcessRunning = $false
       Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
       Write-Host "================================="
@@ -6100,13 +6469,13 @@ function Invoke-WPFtweaksbutton {
     }
 
     for ($i = 0; $i -lt $tweaks.Count; $i++) {
-      Set-WinUtilProgressBar -Label "Applying $($tweaks[$i])" -Percent ($completedSteps / $totalSteps * 100)
+      Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Applying $($tweaks[$i]) ($($completedSteps + 1)/$totalSteps)" -Percent ($completedSteps / $totalSteps * 100)
       Invoke-WinUtilTweaks $tweaks[$i]
       $completedSteps++
       $progress = $completedSteps / $totalSteps
       Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value $progress }
     }
-    Set-WinUtilProgressBar -Label "Tweaks finished" -Percent 100
+    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Tweaks finished" -Percent 100
     $sync.ProcessRunning = $false
     Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
     Write-Host "================================="
@@ -6522,10 +6891,15 @@ function Invoke-WPFUIElements {
                             $textBlock.ToolTip = $entryInfo.Link
                             $textBlock.Style = $HoverTextBlockStyle
                             $textBlock.UseLayoutRounding = $true
-                            
+
                             $textBlock.VerticalAlignment = "Center"
                             $textBlock.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "FontSize")
                             $textBlock.Tag = $checkBox
+
+                            $textBlock.Add_MouseUp({
+                                [System.Object]$Sender = $args[0]
+                                Start-Process $Sender.ToolTip -ErrorAction Stop
+                            })
 
                             $updateLinkMargin = {
                                 [System.Object]$Sender = $args[0]
@@ -6617,12 +6991,12 @@ function Invoke-WPFundoall {
 
 
         for ($i = 0; $i -lt $tweaks.Count; $i++) {
-            Set-WinUtilProgressBar -Label "Undoing $($tweaks[$i])" -Percent ($i / $tweaks.Count * 100)
+            Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Undoing $($tweaks[$i]) ($($i + 1)/$($tweaks.Count))" -Percent ($i / $tweaks.Count * 100)
             Invoke-WinUtiltweaks $tweaks[$i] -undo $true
             Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value ($i/$tweaks.Count) }
         }
 
-        Set-WinUtilProgressBar -Label "Undo Tweaks Finished" -Percent 100
+        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Undo Tweaks Finished" -Percent 100
         $sync.ProcessRunning = $false
         Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
         Write-Host "=================================="
@@ -6677,11 +7051,21 @@ function Invoke-WPFUnInstall {
 
         $packagesWinget = $packagesSorted['Winget']
         $packagesChoco = $packagesSorted['Choco']
+        $totalPackages = @($packagesWinget).Count + @($packagesChoco).Count
+        $completedPackages = 0
+        $hasUI = $null -ne $sync.Form -and $null -ne $sync.Form.Dispatcher
         Write-WinUtilLog -Component "Uninstall" -Message "Uninstall package manager split: winget=$(@($packagesWinget).Count), choco=$(@($packagesChoco).Count)"
 
         try {
             $sync.ProcessRunning = $true
-            Show-WPFInstallAppBusy -text "正在解除安裝應用程式..."
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Preparing app uninstall (0/$totalPackages)" -Percent 0
+                Invoke-WPFUIThread -ScriptBlock {
+                    if ($null -ne $sync.ItemsControl) {
+                        $sync.ItemsControl.IsEnabled = $false
+                    }
+                }
+            }
 
             if ($packagesWinget -contains "Microsoft.Edge") {
                 New-Item -Path "$Env:SystemRoot\SystemApps\Microsoft.MicrosoftEdge_8wekyb3d8bbwe\MicrosoftEdge.exe" -Force
@@ -6689,25 +7073,62 @@ function Invoke-WPFUnInstall {
 
             # Uninstall all selected programs in new window
             if($packagesWinget.Count -gt 0) {
-                Install-WinUtilProgramWinget -Action Uninstall -Programs $packagesWinget
+                foreach ($program in $packagesWinget) {
+                    $position = $completedPackages + 1
+                    $startPercent = [int](($completedPackages / $totalPackages) * 100)
+                    if ($hasUI) {
+                        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Uninstalling $program ($position/$totalPackages)" -Percent $startPercent
+                    }
+
+                    Install-WinUtilProgramWinget -Action Uninstall -Programs @($program)
+                    $completedPackages++
+                    $completedPercent = [int](($completedPackages / $totalPackages) * 100)
+                    if ($hasUI) {
+                        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Uninstalled $program ($completedPackages/$totalPackages)" -Percent $completedPercent
+                        Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value ($completedPercent / 100) }
+                    }
+                }
             }
             if($packagesChoco.Count -gt 0) {
+                $position = $completedPackages + 1
+                $startPercent = [int](($completedPackages / $totalPackages) * 100)
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Uninstalling Chocolatey packages ($position/$totalPackages)" -Percent $startPercent
+                }
+
                 Install-WinUtilProgramChoco -Action Uninstall -Programs $packagesChoco
+                $completedPackages += @($packagesChoco).Count
+                $completedPercent = [int](($completedPackages / $totalPackages) * 100)
+                if ($hasUI) {
+                    Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Uninstalled Chocolatey packages ($completedPackages/$totalPackages)" -Percent $completedPercent
+                    Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -value ($completedPercent / 100) }
+                }
             }
-            Hide-WPFInstallAppBusy
             Write-Host "==========================================="
             Write-Host "--       Uninstalls have finished       ---"
             Write-Host "==========================================="
             Write-WinUtilLog -Component "Uninstall" -Message "Uninstall workflow completed."
-            Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "App uninstall finished" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
+            }
         } catch {
-            Hide-WPFInstallAppBusy
             Write-Host "==========================================="
             Write-Host "Error: $_"
             Write-Host "==========================================="
             Write-WinUtilLog -Level "ERROR" -Component "Uninstall" -Message "Uninstall workflow failed: $($_.Exception.Message)"
-           Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+            if ($hasUI) {
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "App uninstall failed" -Percent 100
+                Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+            }
         } finally {
+            if ($hasUI) {
+                Invoke-WPFUIThread -ScriptBlock {
+                    if ($null -ne $sync.ItemsControl) {
+                        $sync.ItemsControl.IsEnabled = $true
+                    }
+                }
+            }
             $sync.ProcessRunning = $False
         }
 
@@ -6721,22 +7142,51 @@ function Invoke-WPFUpdatesdefault {
         Resets Windows Update settings to default
 
     #>
-    $ErrorActionPreference = 'SilentlyContinue'
     Write-WinUtilLog -Component "Updates" -Message "Resetting Windows Update settings to default."
 
-    Write-Host "Removing Windows Update policy settings..." -ForegroundColor Green
-    Write-WinUtilLog -Component "Updates" -Message "Removing Windows Update policy registry paths."
+    Write-Host "Removing Windows Update settings managed by WinUtil..." -ForegroundColor Green
+    Write-WinUtilLog -Component "Updates" -Message "Removing Windows Update registry values managed by WinUtil."
 
-    Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Recurse -Force
-    Remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization" -Recurse -Force
-    Remove-Item -Path "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" -Recurse -Force
-    Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata" -Recurse -Force
-    Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Recurse -Force
-    Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Recurse -Force
+    $registryValues = @(
+        @{
+            Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+            Names = @("NoAutoUpdate", "AUOptions", "NoAutoRebootWithLoggedOnUsers", "AUPowerManagement")
+        },
+        @{
+            Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+            Names = @("ExcludeWUDriversInQualityUpdate", "DeferFeatureUpdates", "DeferFeatureUpdatesPeriodInDays", "DeferQualityUpdates", "DeferQualityUpdatesPeriodInDays")
+        },
+        @{
+            Path = "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings"
+            Names = @("BranchReadinessLevel", "DeferFeatureUpdatesPeriodInDays", "DeferQualityUpdatesPeriodInDays")
+        },
+        @{
+            Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata"
+            Names = @("PreventDeviceMetadataFromNetwork")
+        },
+        @{
+            Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching"
+            Names = @("DontPromptForWindowsUpdate", "DontSearchWindowsUpdate", "DriverUpdateWizardWuSearchEnabled")
+        },
+        @{
+            Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config"
+            Names = @("DODownloadMode")
+        }
+    )
 
-    Write-Host "Showing Windows Updates in settings..."
-    Write-WinUtilLog -Component "Updates" -Message "Showing Windows Update settings page."
-    Remove-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer -Name SettingsPageVisibility
+    foreach ($registryEntry in $registryValues) {
+        foreach ($valueName in $registryEntry.Names) {
+            Remove-ItemProperty -Path $registryEntry.Path -Name $valueName -ErrorAction SilentlyContinue
+        }
+    }
+
+    $explorerPolicyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+    $settingsPageVisibility = (Get-ItemProperty -Path $explorerPolicyPath -Name "SettingsPageVisibility" -ErrorAction SilentlyContinue).SettingsPageVisibility
+    if ($settingsPageVisibility -eq "hide:windowsupdate") {
+        Write-Host "Removing WinUtil's legacy Windows Update page restriction..."
+        Write-WinUtilLog -Component "Updates" -Message "Removing the legacy Windows Update settings page restriction."
+        Remove-ItemProperty -Path $explorerPolicyPath -Name "SettingsPageVisibility" -ErrorAction SilentlyContinue
+    }
 
     Write-Host "Reenabling Windows Update Services..." -ForegroundColor Green
     Write-WinUtilLog -Component "Updates" -Message "Restoring Windows Update service startup types."
@@ -6751,12 +7201,8 @@ function Invoke-WPFUpdatesdefault {
 
     Write-Host "Restored UsoSvc to Automatic."
     Write-WinUtilLog -Component "Updates" -Message "Starting UsoSvc service and restoring startup type to Automatic."
-    Start-Service -Name UsoSvc
     Set-Service -Name UsoSvc -StartupType Automatic
-
-    Write-Host "Restored WaaSMedicSvc to Manual."
-    Write-WinUtilLog -Component "Updates" -Message "Restoring WaaSMedicSvc service to Manual."
-    Set-Service -Name WaaSMedicSvc -StartupType Manual
+    Start-Service -Name UsoSvc
 
     Write-Host "Enabling update related scheduled tasks..." -ForegroundColor Green
     Write-WinUtilLog -Component "Updates" -Message "Enabling update related scheduled tasks."
@@ -6770,12 +7216,8 @@ function Invoke-WPFUpdatesdefault {
         '\Microsoft\WindowsUpdate\*'
 
     foreach ($Task in $Tasks) {
-        Get-ScheduledTask -TaskPath $Task | Enable-ScheduledTask -ErrorAction SilentlyContinue
+        Get-ScheduledTask -TaskPath $Task -ErrorAction SilentlyContinue | Enable-ScheduledTask -ErrorAction SilentlyContinue
     }
-
-    Write-Host "Windows Local Policies Reset to Default."
-    Write-WinUtilLog -Component "Updates" -Message "Resetting local security policy to defaults with secedit."
-    secedit /configure /cfg "$Env:SystemRoot\inf\defltbase.inf" /db defltbase.sdb
 
     Write-Host "===================================================" -ForegroundColor Green
     Write-Host "---  Windows Update Settings Reset to Default   ---" -ForegroundColor Green
@@ -6795,7 +7237,17 @@ function Invoke-WPFUpdatesdisable {
         Disabling Windows Update is not recommended. This is only for advanced users who know what they are doing.
 
     #>
-    $ErrorActionPreference = 'SilentlyContinue'
+    $confirmation = Show-WinUtilMessage `
+        -Message "Disabling Windows Update stops update services, disables scheduled tasks, and clears downloaded update files. Security updates will not be installed until defaults are restored. Continue?" `
+        -Title "Disable Windows Update?" `
+        -Button "YesNo" `
+        -Icon "Warning"
+
+    if ($confirmation -ne "Yes") {
+        Write-WinUtilLog -Component "Updates" -Message "Windows Update disable workflow cancelled."
+        return
+    }
+
     Write-WinUtilLog -Component "Updates" -Message "Disabling Windows Update settings."
 
     Write-Host "Configuring registry settings..." -ForegroundColor Yellow
@@ -6808,24 +7260,14 @@ function Invoke-WPFUpdatesdisable {
     New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" -Force
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" -Name "DODownloadMode" -Type DWord -Value 0
 
-    Write-Host "Hiding Windows Updates from settings..."
-    Write-WinUtilLog -Component "Updates" -Message "Hiding Windows Update settings page."
-    Set-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer -Name SettingsPageVisibility -Value hide:windowsupdate
+    foreach ($serviceName in @("BITS", "wuauserv", "UsoSvc")) {
+        Write-Host "Stopping and disabling $serviceName service."
+        Write-WinUtilLog -Component "Updates" -Message "Stopping and disabling $serviceName service."
+        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $serviceName -StartupType Disabled
+    }
 
-    Write-Host "Disabled BITS Service."
-    Write-WinUtilLog -Component "Updates" -Message "Disabling BITS service."
-    Set-Service -Name BITS -StartupType Disabled
-
-    Write-Host "Disabled wuauserv Service."
-    Write-WinUtilLog -Component "Updates" -Message "Disabling wuauserv service."
-    Set-Service -Name wuauserv -StartupType Disabled
-
-    Write-Host "Disabled UsoSvc Service."
-    Write-WinUtilLog -Component "Updates" -Message "Stopping and disabling UsoSvc service."
-    Stop-Service -Name UsoSvc -Force
-    Set-Service -Name UsoSvc -StartupType Disabled
-
-    Remove-Item "C:\Windows\SoftwareDistribution\*" -Recurse -Force
+    Remove-Item -Path "C:\Windows\SoftwareDistribution\*" -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "Cleared SoftwareDistribution folder."
     Write-WinUtilLog -Component "Updates" -Message "Cleared SoftwareDistribution folder."
 
@@ -6841,11 +7283,11 @@ function Invoke-WPFUpdatesdisable {
         '\Microsoft\WindowsUpdate\*'
 
     foreach ($Task in $Tasks) {
-        Get-ScheduledTask -TaskPath $Task | Disable-ScheduledTask -ErrorAction SilentlyContinue
+        Get-ScheduledTask -TaskPath $Task -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
     }
 
     Write-Host "=================================" -ForegroundColor Green
-    Write-Host "---   Updates Are Disabled    ---" -ForegroundColor Green
+    Write-Host "--- Windows Update Is Disabled ---" -ForegroundColor Green
     Write-Host "=================================" -ForegroundColor Green
 
     Write-Host "Note: You must restart your system in order for all changes to take effect." -ForegroundColor Yellow
@@ -6860,16 +7302,41 @@ function Invoke-WPFUpdatessecurity {
 
     .DESCRIPTION
         1. Disables driver offering through Windows Update
-        2. Disables Windows Update automatic restart
-        3. Sets Windows Update to Semi-Annual Channel (Targeted)
-        4. Defers feature updates for 365 days
-        5. Defers quality updates for 4 days
+        2. Defers feature updates for 365 days
+        3. Defers quality updates for 4 days
+        4. Prevents automatic restarts while a user is signed in
 
     #>
 
     Write-Host "Disabling driver offering through Windows Update..."
     Write-WinUtilLog -Component "Updates" -Message "Applying recommended Windows Update settings."
     Write-WinUtilLog -Component "Updates" -Message "Disabling driver offering through Windows Update."
+
+    $windowsUpdatePolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+    $automaticUpdatePolicyPath = Join-Path $windowsUpdatePolicyPath "AU"
+
+    Write-Host "Restoring Windows Update availability..."
+    Write-WinUtilLog -Component "Updates" -Message "Restoring Windows Update services and scheduled tasks before applying recommended settings."
+
+    Remove-ItemProperty -Path $automaticUpdatePolicyPath -Name "NoAutoUpdate" -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" -Name "DODownloadMode" -ErrorAction SilentlyContinue
+
+    Set-Service -Name BITS -StartupType Manual
+    Set-Service -Name wuauserv -StartupType Manual
+    Set-Service -Name UsoSvc -StartupType Automatic
+    Start-Service -Name UsoSvc
+
+    $Tasks =
+        '\Microsoft\Windows\InstallService\*',
+        '\Microsoft\Windows\UpdateOrchestrator\*',
+        '\Microsoft\Windows\UpdateAssistant\*',
+        '\Microsoft\Windows\WaaSMedic\*',
+        '\Microsoft\Windows\WindowsUpdate\*',
+        '\Microsoft\WindowsUpdate\*'
+
+    foreach ($Task in $Tasks) {
+        Get-ScheduledTask -TaskPath $Task -ErrorAction SilentlyContinue | Enable-ScheduledTask -ErrorAction SilentlyContinue
+    }
 
     New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata" -Force
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata" -Name "PreventDeviceMetadataFromNetwork" -Type DWord -Value 1
@@ -6880,24 +7347,30 @@ function Invoke-WPFUpdatessecurity {
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Name "DontSearchWindowsUpdate" -Type DWord -Value 1
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Name "DriverUpdateWizardWuSearchEnabled" -Type DWord -Value 0
 
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Force
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Name "ExcludeWUDriversInQualityUpdate" -Type DWord -Value 1
+    New-Item -Path $windowsUpdatePolicyPath -Force
+    Set-ItemProperty -Path $windowsUpdatePolicyPath -Name "ExcludeWUDriversInQualityUpdate" -Type DWord -Value 1
 
-    Write-Host "Setting cumulative updates back by 1 year and security updates by 4 days..."
+    Write-Host "Deferring feature updates by 365 days and quality updates by 4 days..."
     Write-WinUtilLog -Component "Updates" -Message "Deferring feature updates by 365 days and quality updates by 4 days."
 
-    New-Item -Path "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" -Force
+    Set-ItemProperty -Path $windowsUpdatePolicyPath -Name "DeferFeatureUpdates" -Type DWord -Value 1
+    Set-ItemProperty -Path $windowsUpdatePolicyPath -Name "DeferFeatureUpdatesPeriodInDays" -Type DWord -Value 365
+    Set-ItemProperty -Path $windowsUpdatePolicyPath -Name "DeferQualityUpdates" -Type DWord -Value 1
+    Set-ItemProperty -Path $windowsUpdatePolicyPath -Name "DeferQualityUpdatesPeriodInDays" -Type DWord -Value 4
 
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" -Name "BranchReadinessLevel" -Type DWord -Value 20
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" -Name "DeferFeatureUpdatesPeriodInDays" -Type DWord -Value 365
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" -Name "DeferQualityUpdatesPeriodInDays" -Type DWord -Value 4
+    $legacySettingsPath = "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings"
+    foreach ($legacyValue in @("BranchReadinessLevel", "DeferFeatureUpdatesPeriodInDays", "DeferQualityUpdatesPeriodInDays")) {
+        Remove-ItemProperty -Path $legacySettingsPath -Name $legacyValue -ErrorAction SilentlyContinue
+    }
 
-    Write-Host "Disabling Windows Update automatic restart..."
-    Write-WinUtilLog -Component "Updates" -Message "Disabling Windows Update automatic restart while users are logged in."
+    Write-Host "Preventing automatic restarts while users are signed in..."
+    Write-WinUtilLog -Component "Updates" -Message "Configuring scheduled automatic updates without restarting while users are signed in."
 
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Force
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoRebootWithLoggedOnUsers" -Type DWord -Value 1
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "AUPowerManagement" -Type DWord -Value 0
+    New-Item -Path $automaticUpdatePolicyPath -Force
+    # NoAutoRebootWithLoggedOnUsers only applies when automatic updates use option 4.
+    Set-ItemProperty -Path $automaticUpdatePolicyPath -Name "AUOptions" -Type DWord -Value 4
+    Set-ItemProperty -Path $automaticUpdatePolicyPath -Name "NoAutoRebootWithLoggedOnUsers" -Type DWord -Value 1
+    Set-ItemProperty -Path $automaticUpdatePolicyPath -Name "AUPowerManagement" -Type DWord -Value 0
 
     Write-Host "================================="
     Write-Host "-- Updates Set to Recommended ---"
@@ -8836,203 +9309,232 @@ $sync.configs.appx = @'
     "Content": "Feedback Hub",
     "Description": "允許使用者直接向 Microsoft 提交錯誤回報、功能建議與診斷資料。",
     "Panel": "0",
-    "PackageId": "Microsoft.WindowsFeedbackHub"
+    "PackageId": "Microsoft.WindowsFeedbackHub",
+    "StoreId": "9NBLGGH4R32N"
   },
   "WPFAppxMicrosoft_GetHelp": {
     "Category": "Microsoft 應用程式",
     "Content": "取得協助",
     "Description": "提供自動化疑難排解指南、支援文件及 Microsoft 客戶服務的直接協助。",
     "Panel": "0",
-    "PackageId": "Microsoft.GetHelp"
+    "PackageId": "Microsoft.GetHelp",
+    "StoreId": "9PKDZBMV1H3T"
   },
   "WPFAppxMicrosoft_OutlookForWindows": {
     "Category": "Microsoft 應用程式",
     "Content": "Outlook for Windows",
     "Description": "提供現代化的電子郵件管理、行事曆排程及聯絡人整理功能。",
     "Panel": "0",
-    "PackageId": "Microsoft.OutlookForWindows"
+    "PackageId": "Microsoft.OutlookForWindows",
+    "StoreId": "9NRX63209R7B"
   },
   "WPFAppxMSTeams": {
     "Category": "Microsoft 應用程式",
     "Content": "Microsoft Teams",
     "Description": "提供即時通訊、視訊會議、檔案分享與工作區協作功能。",
     "Panel": "0",
-    "PackageId": "MSTeams"
+    "PackageId": "MSTeams",
+    "StoreId": "XP8BT8DW290MPQ"
   },
   "WPFAppxClipchamp_Clipchamp": {
     "Category": "工具程式與生產力",
     "Content": "Clipchamp",
     "Description": "提供操作友善的影片編輯器，內建範本、特效與時間軸編輯工具。",
     "Panel": "0",
-    "PackageId": "Clipchamp.Clipchamp"
+    "PackageId": "Clipchamp.Clipchamp",
+    "StoreId": "9P1J8S7CCWWT"
   },
   "WPFAppxMicrosoft_MicrosoftOfficeHub": {
     "Category": "Microsoft 應用程式",
     "Content": "Microsoft 365",
     "Description": "作為集中式啟動器與儀表板，用於存取雲端 Microsoft 365 應用程式與最近的文件。",
     "Panel": "0",
-    "PackageId": "Microsoft.MicrosoftOfficeHub"
+    "PackageId": "Microsoft.MicrosoftOfficeHub",
+    "StoreId": "9WZDNCRD29V9"
   },
   "WPFAppxMicrosoft_ZuneMusic": {
     "Category": "工具程式與生產力",
     "Content": "媒體播放器",
     "Description": "播放本機音訊與影片檔案，並提供現代化的播放清單管理與投放功能。",
     "Panel": "0",
-    "PackageId": "Microsoft.ZuneMusic"
+    "PackageId": "Microsoft.ZuneMusic",
+    "StoreId": "9WZDNCRFJ3PT"
   },
   "WPFAppxMicrosoft_BingSearch": {
     "Category": "Bing 與網路服務",
     "Content": "Bing 搜尋",
     "Description": "將 Microsoft Bing 搜尋功能與網路服務直接整合進作業系統。",
     "Panel": "1",
-    "PackageId": "Microsoft.BingSearch"
+    "PackageId": "Microsoft.BingSearch",
+    "StoreId": "9NZBF4GT040C"
   },
   "WPFAppxMicrosoftCorporationII_QuickAssist": {
     "Category": "工具程式與生產力",
     "Content": "快速助手",
     "Description": "透過網際網路連線啟用安全的遠端技術支援與螢幕分享。",
     "Panel": "0",
-    "PackageId": "MicrosoftCorporationII.QuickAssist"
+    "PackageId": "MicrosoftCorporationII.QuickAssist",
+    "StoreId": "9P7BP5VNWKX5"
   },
   "WPFAppxMicrosoft_WindowsDevHome": {
     "Category": "開發者工具",
     "Content": "Dev Home",
     "Description": "提供專為軟體開發者設計的儀表板，用於開發環境設定、儲存庫同步與硬體小工具。",
     "Panel": "1",
-    "PackageId": "Microsoft.Windows.DevHome"
+    "PackageId": "Microsoft.Windows.DevHome",
+    "StoreId": "9N8MHTPHNGVV"
   },
   "WPFAppxMicrosoft_WindowsCrossDevice": {
     "Category": "Microsoft 生態系",
     "Content": "行動裝置",
     "Description": "管理與已配對行動裝置的系統層級背景連線。移除此項可能會停用跨裝置功能，例如手機螢幕鏡射、檔案傳輸，以及整合於 Windows 設定中的行動熱點交接。",
     "Panel": "0",
-    "PackageId": "MicrosoftWindows.CrossDevice"
+    "PackageId": "MicrosoftWindows.CrossDevice",
+    "StoreId": "9NTXGKQ8P7N0"
   },
   "WPFAppxMicrosoft_Todos": {
     "Category": "工具程式與生產力",
     "Content": "To Do",
     "Description": "建立、追蹤並同步個人工作、智慧型清單與每日提醒。",
     "Panel": "0",
-    "PackageId": "Microsoft.Todos"
+    "PackageId": "Microsoft.Todos",
+    "StoreId": "9NBLGGH5R558"
   },
   "WPFAppxMicrosoft_PowerAutomateDesktop": {
     "Category": "開發者工具",
     "Content": "Power Automate",
     "Description": "運用低程式碼的視覺化腳本，自動化重複性工作流程與桌面工作。",
     "Panel": "1",
-    "PackageId": "Microsoft.PowerAutomateDesktop"
+    "PackageId": "Microsoft.PowerAutomateDesktop",
+    "StoreId": "9NFTCH6J7FHV"
   },
   "WPFAppxMicrosoft_YourPhone": {
     "Category": "Microsoft 生態系",
     "Content": "手機連結",
     "Description": "將行動裝置的簡訊、手機通知、相片與通話同步到桌面。",
     "Panel": "0",
-    "PackageId": "Microsoft.YourPhone"
+    "PackageId": "Microsoft.YourPhone",
+    "StoreId": "9NMPJ99VJBWV"
   },
   "WPFAppxMicrosoft_MicrosoftStickyNotes": {
     "Category": "工具程式與生產力",
     "Content": "便利貼",
     "Description": "在桌面上建立快速的浮動文字便箋，並自動跨裝置同步。",
     "Panel": "0",
-    "PackageId": "Microsoft.MicrosoftStickyNotes"
+    "PackageId": "Microsoft.MicrosoftStickyNotes",
+    "StoreId": "9NBLGGH4QGHW"
   },
   "WPFAppxMicrosoft_WindowsSoundRecorder": {
     "Category": "工具程式與生產力",
     "Content": "錄音機",
     "Description": "錄製並修剪即時音訊輸入，並提供簡易的麥克風調整控制。",
     "Panel": "0",
-    "PackageId": "Microsoft.WindowsSoundRecorder"
+    "PackageId": "Microsoft.WindowsSoundRecorder",
+    "StoreId": "9WZDNCRFHWKN"
   },
   "WPFAppxMicrosoft_WindowsAlarms": {
     "Category": "工具程式與生產力",
     "Content": "時鐘",
     "Description": "提供世界時鐘、鬧鐘、倒數計時器、碼錶，以及專屬的專注時段追蹤功能。",
     "Panel": "0",
-    "PackageId": "Microsoft.WindowsAlarms"
+    "PackageId": "Microsoft.WindowsAlarms",
+    "StoreId": "9WZDNCRFJ3PR"
   },
   "WPFAppxMicrosoft_Paint": {
     "Category": "工具程式與生產力",
     "Content": "小畫家",
     "Description": "提供內建的數位素描、基本影像編輯及像素級圖形處理工具。",
     "Panel": "0",
-    "PackageId": "Microsoft.Paint"
+    "PackageId": "Microsoft.Paint",
+    "StoreId": "9PCFS5B6T72H"
   },
   "WPFAppxMicrosoft_WindowsNotepad": {
     "Category": "工具程式與生產力",
     "Content": "記事本",
     "Description": "提供一款輕量的文字編輯器，支援多分頁，適用於純文字檔案與程式碼片段。",
     "Panel": "0",
-    "PackageId": "Microsoft.WindowsNotepad"
+    "PackageId": "Microsoft.WindowsNotepad",
+    "StoreId": "9MSMLRH6LZF3"
   },
   "WPFAppxMicrosoft_ScreenSketch": {
     "Category": "工具程式與生產力",
     "Content": "剪取工具",
     "Description": "擷取螢幕截圖或螢幕錄影，並內建標註、圖片裁切與光學字元辨識（OCR）功能。",
     "Panel": "0",
-    "PackageId": "Microsoft.ScreenSketch"
+    "PackageId": "Microsoft.ScreenSketch",
+    "StoreId": "9MZ95KL8MR0L"
   },
   "WPFAppxMicrosoft_Copilot": {
     "Category": "Bing 與網路服務",
     "Content": "Copilot",
     "Description": "啟動 Microsoft AI 助理，提供情境式解答、創意寫作協助與智慧網路搜尋。",
     "Panel": "1",
-    "PackageId": "Microsoft.Copilot"
+    "PackageId": "Microsoft.Copilot",
+    "StoreId": "9NHT9RB2F4HD"
   },
   "WPFAppxMicrosoft_WindowsCalculator": {
     "Category": "工具程式與生產力",
     "Content": "計算機",
     "Description": "執行標準算術、科學運算、程式設計計算及單位換算。",
     "Panel": "0",
-    "PackageId": "Microsoft.WindowsCalculator"
+    "PackageId": "Microsoft.WindowsCalculator",
+    "StoreId": "9WZDNCRFHVN5"
   },
   "WPFAppxMicrosoft_WindowsCamera": {
     "Category": "工具程式與生產力",
     "Content": "相機",
     "Description": "透過連接的網路攝影機或影像裝置拍攝相片與錄製影片檔。",
     "Panel": "0",
-    "PackageId": "Microsoft.WindowsCamera"
+    "PackageId": "Microsoft.WindowsCamera",
+    "StoreId": "9WZDNCRFJBBG"
   },
   "WPFAppxMicrosoft_WindowsPhotos": {
     "Category": "工具程式與生產力",
     "Content": "相片",
     "Description": "整理、檢視及裁切本機影像，並提供基本的色彩調整與相簿建立工具。",
     "Panel": "0",
-    "PackageId": "Microsoft.Windows.Photos"
+    "PackageId": "Microsoft.Windows.Photos",
+    "StoreId": "9WZDNCRFJBH4"
   },
   "WPFAppxMicrosoft_BingNews": {
     "Category": "Bing 與網路服務",
     "Content": "新聞",
     "Description": "彙整即時新聞頭條、個人化文章動態與世界時事。",
     "Panel": "1",
-    "PackageId": "Microsoft.BingNews"
+    "PackageId": "Microsoft.BingNews",
+    "StoreId": "9WZDNCRFHVFW"
   },
   "WPFAppxMicrosoft_BingWeather": {
     "Category": "Bing 與網路服務",
     "Content": "天氣",
     "Description": "顯示當地即時天氣追蹤、雷達圖與歷史氣象預報。",
     "Panel": "1",
-    "PackageId": "Microsoft.BingWeather"
+    "PackageId": "Microsoft.BingWeather",
+    "StoreId": "9WZDNCRFJ3Q2"
   },
   "WPFAppxMicrosoft_GamingApp": {
     "Category": "Xbox 與遊戲",
     "Content": "Xbox App",
     "Description": "作為主要的遊戲庫管理員、社群社交介面與 PC Game Pass 儀表板。",
     "Panel": "1",
-    "PackageId": "Microsoft.GamingApp"
+    "PackageId": "Microsoft.GamingApp",
+    "StoreId": "9MV0B5HZVK9Z"
   },
   "WPFAppxMicrosoft_XboxGamingOverlay": {
     "Category": "Xbox 與遊戲",
     "Content": "Xbox Game Bar",
     "Description": "提供可自訂的遊戲內狀態小工具、音訊平衡滑桿、系統監控工具及遊戲畫面錄製功能。",
     "Panel": "1",
-    "PackageId": "Microsoft.XboxGamingOverlay"
+    "PackageId": "Microsoft.XboxGamingOverlay",
+    "StoreId": "9NZKPSTSNW4P"
   },
   "WPFAppxMicrosoft_XboxIdentityProvider": {
     "Category": "Xbox 與遊戲",
     "Content": "Xbox Identity Provider",
     "Description": "管理 Xbox 網路使用者驗證，以及已連線遊戲的背景帳號驗證。警告：移除此項可能會導致依賴此驗證管道的非 Xbox 遊戲與應用程式無法使用 Microsoft 帳號登入。",
     "Panel": "1",
-    "PackageId": "Microsoft.XboxIdentityProvider"
+    "PackageId": "Microsoft.XboxIdentityProvider",
+    "StoreId": "9WZDNCRD1HKW"
   },
   "WPFAppxMicrosoft_XboxSpeechToTextOverlay": {
     "Category": "Xbox 與遊戲",
@@ -9053,7 +9555,8 @@ $sync.configs.appx = @'
     "Content": "Start Experiences App",
     "Description": "為 Windows Widgets 面板提供動力，傳遞個人化的新聞、天氣、體育與財經內容資訊流。",
     "Panel": "1",
-    "PackageId": "Microsoft.StartExperiencesApp"
+    "PackageId": "Microsoft.StartExperiencesApp",
+    "StoreId": "9PC1H9VN18CM"
   },
   "WPFAppxMicrosoft_MicrosoftSolitaireCollection": {
     "Category": "Xbox 與遊戲",
@@ -9566,7 +10069,7 @@ $sync.configs.themes = @'
     "IconFontSize": "14",
     "IconButtonSize": "35",
     "SettingsIconFontSize": "18",
-    "CloseIconFontSize": "18",
+    "CloseIconFontSize": "12",
     "GroupBorderBackgroundColor": "#232629",
     "ButtonFontSize": "12",
     "ButtonFontFamily": "Arial",
@@ -9587,7 +10090,6 @@ $sync.configs.themes = @'
     "AppInstallUnselectedColor": "#F7F7F7",
     "AppInstallHighlightedColor": "#CFCFCF",
     "AppInstallSelectedColor": "#C2C2C2",
-    "AppInstallOverlayBackgroundColor": "#6A6D72",
     "ComboBoxForegroundColor": "#232629",
     "ComboBoxBackgroundColor": "#F7F7F7",
     "LabelboxForegroundColor": "#232629",
@@ -9601,7 +10103,6 @@ $sync.configs.themes = @'
     "ScrollBarDraggingColor": "#6A6D72",
     "ProgressBarForegroundColor": "#2E77FF",
     "ProgressBarBackgroundColor": "Transparent",
-    "ProgressBarTextColor": "#232629",
     "ButtonInstallBackgroundColor": "#F7F7F7",
     "ButtonTweaksBackgroundColor": "#F7F7F7",
     "ButtonConfigBackgroundColor": "#F7F7F7",
@@ -9629,7 +10130,6 @@ $sync.configs.themes = @'
     "AppInstallUnselectedColor": "#232629",
     "AppInstallHighlightedColor": "#3C3C3C",
     "AppInstallSelectedColor": "#4C4C4C",
-    "AppInstallOverlayBackgroundColor": "#2E3135",
     "ComboBoxForegroundColor": "#F7F7F7",
     "ComboBoxBackgroundColor": "#1E3747",
     "LabelboxForegroundColor": "#5BDCFF",
@@ -9641,9 +10141,8 @@ $sync.configs.themes = @'
     "ScrollBarBackgroundColor": "#2E3135",
     "ScrollBarHoverColor": "#3B4252",
     "ScrollBarDraggingColor": "#5E81AC",
-    "ProgressBarForegroundColor": "#222222",
+    "ProgressBarForegroundColor": "#6EFF72",
     "ProgressBarBackgroundColor": "Transparent",
-    "ProgressBarTextColor": "#232629",
     "ButtonInstallBackgroundColor": "#222222",
     "ButtonTweaksBackgroundColor": "#333333",
     "ButtonConfigBackgroundColor": "#444444",
@@ -11588,6 +12087,17 @@ $inputXML = @'
             </Setter.Value>
         </Setter>
         </Style>
+        <Style x:Key="ComboBoxToggleButtonStyle" TargetType="ToggleButton">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="{TemplateBinding Background}" BorderThickness="0">
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Foreground" Value="{DynamicResource ComboBoxForegroundColor}" />
             <Setter Property="Background" Value="{DynamicResource ComboBoxBackgroundColor}" />
@@ -11602,6 +12112,7 @@ $inputXML = @'
                                     CornerRadius="{DynamicResource ButtonCornerRadius}"
                                     Background="{TemplateBinding Background}">
                                 <ToggleButton Name="ToggleButton"
+                                              Style="{StaticResource ComboBoxToggleButtonStyle}"
                                               Background="Transparent"
                                               BorderThickness="0"
                                               IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
@@ -11649,6 +12160,27 @@ $inputXML = @'
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="{DynamicResource ComboBoxBackgroundColor}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ComboBoxForegroundColor}"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Setter Property="ContentTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" Background="Transparent"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ComboBoxItem}}"/>
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource ButtonBackgroundMouseoverColor}"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource ButtonBackgroundSelectedColor}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <Style TargetType="Label">
             <Setter Property="Foreground" Value="{DynamicResource LabelboxForegroundColor}"/>
             <Setter Property="Background" Value="{DynamicResource LabelBackgroundColor}"/>
@@ -11661,8 +12193,7 @@ $inputXML = @'
             <Setter Property="Foreground" Value="{DynamicResource LabelboxForegroundColor}"/>
             <Setter Property="Background" Value="{DynamicResource LabelBackgroundColor}"/>
         </Style>
-        <!-- Toggle button template x:Key="TabToggleButton" -->
-        <Style TargetType="{x:Type ToggleButton}">
+        <Style x:Key="TabToggleButton" TargetType="{x:Type ToggleButton}">
             <Setter Property="Margin" Value="{DynamicResource ButtonMargin}"/>
             <Setter Property="Content" Value=""/>
             <Setter Property="FontFamily" Value="{DynamicResource FontFamily}"/>
@@ -12258,12 +12789,60 @@ $inputXML = @'
                 </MultiDataTrigger>
             </Style.Triggers>
         </Style>
+        <Style x:Key="RoundedProgressBarStyle" TargetType="ProgressBar">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Border CornerRadius="4" Background="{DynamicResource MainBackgroundColor}" BorderBrush="{DynamicResource MainForegroundColor}" BorderThickness="1">
+                            <Grid ClipToBounds="True">
+                                <Border Name="PART_Track" CornerRadius="4" Background="Transparent"/>
+                                <Border Name="PART_Indicator" CornerRadius="4" Background="{DynamicResource ProgressBarForegroundColor}" HorizontalAlignment="Left"/>
+                            </Grid>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Filter Chip Style — used by the Install tab category filter buttons -->
+        <Style x:Key="FilterChipStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="Padding" Value="12,0,12,0"/>
+            <Setter Property="Width" Value="Auto"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Name="ChipBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{DynamicResource ButtonBorderThickness}"
+                                CornerRadius="{DynamicResource ButtonCornerRadius}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ChipBorder" Property="Background" Value="{DynamicResource ButtonBackgroundPressedColor}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ChipBorder" Property="Background" Value="{DynamicResource ButtonBackgroundMouseoverColor}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ChipBorder" Property="Background" Value="{DynamicResource ButtonBackgroundSelectedColor}"/>
+                                <Setter Property="Foreground" Value="DimGray"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
     <Grid Background="{DynamicResource MainBackgroundColor}" ShowGridLines="False" Name="WPFMainGrid" Width="Auto" Height="Auto" HorizontalAlignment="Stretch">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
@@ -12280,10 +12859,10 @@ $inputXML = @'
             </Grid.ColumnDefinitions>
 
             <!-- Navigation Buttons Panel -->
-            <StackPanel Name="NavDockPanel" Orientation="Horizontal" Grid.Column="0" Margin="5,5,10,5">
+            <StackPanel Name="NavDockPanel" Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center" Margin="5,5,10,5">
                 <StackPanel Name="NavLogoPanel" Orientation="Horizontal" HorizontalAlignment="Left" Background="{DynamicResource MainBackgroundColor}" SnapsToDevicePixels="True" Margin="10,0,20,0">
                 </StackPanel>
-                <ToggleButton Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
+                <ToggleButton Style="{StaticResource TabToggleButton}" Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
                     Background="{DynamicResource ButtonInstallBackgroundColor}" Foreground="white" FontWeight="Bold" Name="WPFTab1BT">
                     <ToggleButton.Content>
                         <TextBlock FontSize="{DynamicResource TabButtonFontSize}" Background="Transparent" Foreground="{DynamicResource ButtonInstallForegroundColor}" >
@@ -12291,7 +12870,7 @@ $inputXML = @'
                         </TextBlock>
                     </ToggleButton.Content>
                 </ToggleButton>
-                <ToggleButton Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
+                <ToggleButton Style="{StaticResource TabToggleButton}" Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
                     Background="{DynamicResource ButtonTweaksBackgroundColor}" Foreground="{DynamicResource ButtonTweaksForegroundColor}" FontWeight="Bold" Name="WPFTab2BT">
                     <ToggleButton.Content>
                         <TextBlock FontSize="{DynamicResource TabButtonFontSize}" Background="Transparent" Foreground="{DynamicResource ButtonTweaksForegroundColor}">
@@ -12299,7 +12878,7 @@ $inputXML = @'
                         </TextBlock>
                     </ToggleButton.Content>
                 </ToggleButton>
-                <ToggleButton Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
+                <ToggleButton Style="{StaticResource TabToggleButton}" Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
                     Background="{DynamicResource ButtonConfigBackgroundColor}" Foreground="{DynamicResource ButtonConfigForegroundColor}" FontWeight="Bold" Name="WPFTab3BT">
                     <ToggleButton.Content>
                         <TextBlock FontSize="{DynamicResource TabButtonFontSize}" Background="Transparent" Foreground="{DynamicResource ButtonConfigForegroundColor}">
@@ -12307,7 +12886,7 @@ $inputXML = @'
                         </TextBlock>
                     </ToggleButton.Content>
                 </ToggleButton>
-                <ToggleButton Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
+                <ToggleButton Style="{StaticResource TabToggleButton}" Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
                     Background="{DynamicResource ButtonUpdatesBackgroundColor}" Foreground="{DynamicResource ButtonUpdatesForegroundColor}" FontWeight="Bold" Name="WPFTab4BT">
                     <ToggleButton.Content>
                         <TextBlock FontSize="{DynamicResource TabButtonFontSize}" Background="Transparent" Foreground="{DynamicResource ButtonUpdatesForegroundColor}">
@@ -12315,7 +12894,7 @@ $inputXML = @'
                         </TextBlock>
                     </ToggleButton.Content>
                 </ToggleButton>
-                <ToggleButton Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="Auto" MinWidth="{DynamicResource TabButtonWidth}"
+                <ToggleButton Style="{StaticResource TabToggleButton}" Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="Auto" MinWidth="{DynamicResource TabButtonWidth}"
                     Background="{DynamicResource ButtonWin11ISOBackgroundColor}" Foreground="{DynamicResource ButtonWin11ISOForegroundColor}" FontWeight="Bold" Name="WPFTab5BT">
                     <ToggleButton.Content>
                         <TextBlock FontSize="{DynamicResource TabButtonFontSize}" Background="Transparent" Foreground="{DynamicResource ButtonWin11ISOForegroundColor}">
@@ -12332,13 +12911,12 @@ $inputXML = @'
                     <ColumnDefinition Width="Auto"/><!-- Buttons area -->
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Margin="5,0,0,0" Width="{DynamicResource SearchBarWidth}" Height="{DynamicResource SearchBarHeight}" VerticalAlignment="Center" HorizontalAlignment="Left">
+                <Border Grid.Column="0" Margin="5,0,10,0" MinWidth="120" Height="{DynamicResource SearchBarHeight}" VerticalAlignment="Center" HorizontalAlignment="Stretch">
                     <Grid>
                         <TextBox
-                            Width="{DynamicResource SearchBarWidth}"
                             Height="{DynamicResource SearchBarHeight}"
                             FontSize="{DynamicResource SearchBarTextBoxFontSize}"
-                            VerticalAlignment="Center" HorizontalAlignment="Left"
+                            VerticalAlignment="Center" HorizontalAlignment="Stretch"
                             BorderThickness="1"
                             Name="SearchBar"
                             Foreground="{DynamicResource MainForegroundColor}" Background="{DynamicResource MainBackgroundColor}"
@@ -12346,6 +12924,7 @@ $inputXML = @'
                             ToolTip="按 Ctrl-F 並輸入軟體名稱以篩選下方清單，按 Esc 清除篩選">
                         </TextBox>
                         <TextBlock
+                            Name="SearchBarIcon"
                             VerticalAlignment="Center" HorizontalAlignment="Right"
                             FontFamily="Segoe MDL2 Assets"
                             Foreground="{DynamicResource ButtonBackgroundSelectedColor}"
@@ -12355,14 +12934,14 @@ $inputXML = @'
                     </Grid>
                 </Border>
                 <Button Grid.Column="0"
-                    VerticalAlignment="Center" HorizontalAlignment="Left"
+                    VerticalAlignment="Center" HorizontalAlignment="Right"
                     Name="SearchBarClearButton"
                     Style="{StaticResource SearchBarClearButtonStyle}"
-                    Margin="213,0,0,0" Visibility="Collapsed">
+                    Margin="0,0,20,0" Visibility="Collapsed">
                 </Button>
 
                 <!-- Buttons Container -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="5,5,5,5">
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="5,5,5,5">
                     <Button Name="ThemeButton"
                         Style="{StaticResource HoverButtonStyle}"
                         BorderBrush="Transparent"
@@ -12370,7 +12949,7 @@ $inputXML = @'
                     Foreground="{DynamicResource MainForegroundColor}"
                     FontSize="{DynamicResource SettingsIconFontSize}"
                     Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
-                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                    HorizontalAlignment="Right" VerticalAlignment="Center"
                     Margin="0,0,2,0"
                     FontFamily="Segoe MDL2 Assets"
                     Content="N/A"
@@ -12408,7 +12987,7 @@ $inputXML = @'
                     Foreground="{DynamicResource MainForegroundColor}"
                     FontSize="{DynamicResource SettingsIconFontSize}"
                     Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
-                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                    HorizontalAlignment="Right" VerticalAlignment="Center"
                     Margin="0,0,2,0"
                     FontFamily="Segoe MDL2 Assets"
                     Content="&#xE8D3;"
@@ -12476,7 +13055,7 @@ $inputXML = @'
                     Foreground="{DynamicResource MainForegroundColor}"
                     FontSize="{DynamicResource SettingsIconFontSize}"
                     Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
-                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                    HorizontalAlignment="Right" VerticalAlignment="Center"
                     Margin="0,0,2,0"
                     FontFamily="Segoe MDL2 Assets"
                     Content="&#xE713;"/>
@@ -12505,24 +13084,62 @@ $inputXML = @'
                 </Popup>
 
                     <Button
-                    Content="&#x2212;" BorderThickness="0"
-                    BorderBrush="Transparent"
-                    Background="{DynamicResource MainBackgroundColor}"
-                    Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
-                    HorizontalAlignment="Right" VerticalAlignment="Top"
-                    Margin="0,0,0,0"
-                    FontFamily="{DynamicResource FontFamily}"
-                    Foreground="{DynamicResource MainForegroundColor}" FontSize="{DynamicResource CloseIconFontSize}" Name="WPFMinimizeButton" />
+                        Content="&#xE921;"
+                        Style="{StaticResource HoverButtonStyle}"
+                        BorderThickness="0"
+                        BorderBrush="Transparent"
+                        Background="{DynamicResource MainBackgroundColor}"
+                        Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
+                        HorizontalAlignment="Right" VerticalAlignment="Center"
+                        Margin="0"
+                        FontFamily="Segoe MDL2 Assets"
+                        Foreground="{DynamicResource MainForegroundColor}"
+                        FontSize="{DynamicResource CloseIconFontSize}"
+                        ToolTip="Minimize"
+                        AutomationProperties.Name="Minimize"
+                        Name="WPFMinimizeButton" />
+                    <Button
+                        BorderThickness="0"
+                        BorderBrush="Transparent"
+                        Background="{DynamicResource MainBackgroundColor}"
+                        Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
+                        HorizontalAlignment="Right" VerticalAlignment="Center"
+                        Margin="0,0,0,0"
+                        FontFamily="Segoe MDL2 Assets"
+                        Foreground="{DynamicResource MainForegroundColor}"
+                        FontSize="{DynamicResource CloseIconFontSize}"
+                        Name="WPFMaximizeButton">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource HoverButtonStyle}">
+                                <Setter Property="Content" Value="&#xE922;"/>
+                                <Setter Property="ToolTip" Value="Maximize"/>
+                                <Setter Property="AutomationProperties.Name" Value="Maximize"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding WindowState, RelativeSource={RelativeSource AncestorType={x:Type Window}}}" Value="Maximized">
+                                        <Setter Property="Content" Value="&#xE923;"/>
+                                        <Setter Property="ToolTip" Value="Restore"/>
+                                        <Setter Property="AutomationProperties.Name" Value="Restore"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
 
                     <Button
-                    Content="&#xD7;" BorderThickness="0"
-                BorderBrush="Transparent"
-                Background="{DynamicResource MainBackgroundColor}"
-                Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
-                HorizontalAlignment="Right" VerticalAlignment="Top"
-                Margin="0,0,0,0"
-                FontFamily="{DynamicResource FontFamily}"
-                Foreground="{DynamicResource MainForegroundColor}" FontSize="{DynamicResource CloseIconFontSize}" Name="WPFCloseButton" />
+                        Content="&#xE8BB;"
+                        Style="{StaticResource HoverButtonStyle}"
+                        BorderThickness="0"
+                        BorderBrush="Transparent"
+                        Background="{DynamicResource MainBackgroundColor}"
+                        Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
+                        HorizontalAlignment="Right" VerticalAlignment="Center"
+                        Margin="0"
+                        FontFamily="Segoe MDL2 Assets"
+                        Foreground="{DynamicResource MainForegroundColor}"
+                        FontSize="{DynamicResource CloseIconFontSize}"
+                        ToolTip="Close"
+                        AutomationProperties.Name="Close"
+                        Name="WPFCloseButton" />
                 </StackPanel>
             </Grid>
         </Grid>
@@ -12530,8 +13147,33 @@ $inputXML = @'
         <TabControl Name="WPFTabNav" Background="Transparent" Width="Auto" Height="Auto" BorderBrush="Transparent" BorderThickness="0" Grid.Row="2" Grid.Column="0" Padding="-1">
             <TabItem Header="Install" Visibility="Collapsed" Name="WPFTab1">
                 <Grid Background="Transparent" >
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Grid.Column="0" Margin="{DynamicResource TabContentMargin}">
+                    <!-- Quick Category Search Chips -->
+                    <WrapPanel Grid.Row="0" Orientation="Horizontal" Margin="5,5,5,5" Name="WPFSearchChips">
+                        <TextBlock Text="Filters"
+                                   FontSize="{DynamicResource HeaderFontSize}"
+                                   FontFamily="{DynamicResource HeaderFontFamily}"
+                                   Foreground="{DynamicResource LabelboxForegroundColor}"
+                                   Background="Transparent"
+                                   VerticalAlignment="Center"
+                                   Margin="15,0,8,0"/>
+                        <Button Name="WPFSearchChipAll"             Content="All"               Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipBrowsers"        Content="Browsers"          Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipCommunications"  Content="Communications"    Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipDevelopment"     Content="Development"       Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipGames"           Content="Games"             Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipMicrosoftTools"  Content="Microsoft Tools"   Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipMultimediaTools" Content="Multimedia Tools"  Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipProTools"        Content="Pro Tools"         Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipSelfhostedTools" Content="Selfhosted Tools"  Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipUtilities"       Content="Utilities"         Style="{StaticResource FilterChipStyle}"/>
+                    </WrapPanel>
+
+                    <Grid Grid.Row="1" Margin="{DynamicResource TabContentMargin}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
@@ -12563,14 +13205,14 @@ $inputXML = @'
 
                             <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Vertical" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="5">
                                 <Label Content="建議選項：" FontSize="{DynamicResource FontSize}" VerticalAlignment="Center" Margin="2"/>
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,2,0,0">
+                                <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,2,0,0">
                                     <Button Name="WPFstandard" Content=" 標準 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFminimal" Content=" 精簡 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFAdvanced" Content=" 進階 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFClearTweaksSelection" Content=" 清除 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFGetInstalledTweaks" Content=" 取得已套用調校 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFAppxRemoval" Content=" AppX Removal " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                </StackPanel>
+                                </WrapPanel>
                             </StackPanel>
 
                             <Grid Name="tweakspanel" Grid.Row="1">
@@ -12603,99 +13245,148 @@ $inputXML = @'
             </TabItem>
             <TabItem Header="Updates" Visibility="Collapsed" Name="WPFTab4">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="{DynamicResource TabContentMargin}">
-                    <Grid Background="Transparent" MaxWidth="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ScrollViewer}}">
+                    <Grid Background="Transparent" MaxWidth="1250" HorizontalAlignment="Center">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>  <!-- Row for the 3 columns -->
-                            <RowDefinition Height="Auto"/>  <!-- Row for Windows Version -->
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <!-- Three columns container -->
-                        <Grid Grid.Row="0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Row="0" Margin="10,10,10,14">
+                            <TextBlock Text="Windows Update Profiles"
+                                       FontSize="24"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource MainForegroundColor}"/>
+                            <TextBlock Text="Choose how Windows receives updates. Each profile replaces the Windows Update settings managed by WinUtil."
+                                       Margin="0,6,0,0"
+                                       FontSize="13"
+                                       TextWrapping="Wrap"
+                                       Foreground="{DynamicResource MainForegroundColor}"/>
+                        </StackPanel>
 
-                            <!-- Default Settings -->
-                            <Border Grid.Column="0" Style="{StaticResource BorderStyle}">
-                                <StackPanel>
-                                    <Button Name="WPFUpdatesdefault"
-                                            FontSize="{DynamicResource ConfigTabButtonFontSize}"
-                                            Content="預設設定"
-                                            Margin="10,5"
-                                            Padding="10"/>
-                                    <TextBlock Margin="10"
-                                             TextWrapping="Wrap"
-                                             Foreground="{DynamicResource MainForegroundColor}">
-                                        <Run FontWeight="Bold">預設 Windows Update 設定</Run>
-                                        <LineBreak/>
-                                         - 不修改 Windows 預設值
-                                        <LineBreak/>
-                                         - 移除所有自訂更新設定
-                                        <LineBreak/><LineBreak/>
-                                        <Run FontStyle="Italic" FontSize="11">注意：這會把 Windows Update 設定重設為原廠預設值，並移除對 Windows Update 所做的任何原則或自訂設定。</Run>
-                                    </TextBlock>
-                                </StackPanel>
-                            </Border>
-
-                            <!-- Security Settings -->
-                            <Border Grid.Column="1" Style="{StaticResource BorderStyle}">
-                                <StackPanel>
+                        <UniformGrid Grid.Row="1" Columns="3">
+                            <Border Style="{StaticResource BorderStyle}"
+                                    BorderBrush="{DynamicResource ProgressBarForegroundColor}"
+                                    BorderThickness="2"
+                                    Padding="16"
+                                    MinHeight="300">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Grid.Row="0" Margin="0,0,0,14">
+                                        <TextBlock Text="Recommended"
+                                                   FontSize="20"
+                                                   FontWeight="Bold"
+                                                   Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="Balanced security and stability"
+                                                   Margin="0,4,0,0"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource MainForegroundColor}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1">
+                                        <TextBlock Text="- Defers feature updates for 365 days" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Defers quality updates for 4 days" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Excludes drivers from quality updates" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Prevents automatic restarts while a user is signed in" TextWrapping="Wrap" Margin="0,0,0,12" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="Available on Windows Pro, Enterprise, and Education editions."
+                                                   FontSize="11"
+                                                   FontStyle="Italic"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource MainForegroundColor}"/>
+                                    </StackPanel>
                                     <Button Name="WPFUpdatessecurity"
+                                            Grid.Row="2"
+                                            Content="Apply Recommended"
                                             FontSize="{DynamicResource ConfigTabButtonFontSize}"
-                                            Content="安全性設定"
-                                            Margin="10,5"
+                                            Margin="0,16,0,0"
                                             Padding="10"/>
-                                    <TextBlock Margin="10"
-                                             TextWrapping="Wrap"
-                                             Foreground="{DynamicResource MainForegroundColor}">
-                                        <Run FontWeight="Bold">平衡式安全性設定</Run>
-                                        <LineBreak/>
-                                         - 功能更新延後 365 天
-                                        <LineBreak/>
-                                         - 安全性更新於 4 天後安裝
-                                        <LineBreak/>
-                                         - 阻止 Windows Update 安裝驅動程式
-                                        <LineBreak/><LineBreak/>
-                                        <Run FontWeight="SemiBold">功能更新：</Run> 新功能與潛在錯誤
-                                        <LineBreak/>
-                                        <Run FontWeight="SemiBold">安全性更新：</Run> 重大安全性修補
-                                    <LineBreak/><LineBreak/>
-                                    <Run FontStyle="Italic" FontSize="11">注意：這僅適用於可使用群組原則的 Pro 版系統。</Run>
-                                    </TextBlock>
-                                </StackPanel>
+                                </Grid>
                             </Border>
 
-                            <!-- Disable Updates -->
-                            <Border Grid.Column="2" Style="{StaticResource BorderStyle}">
-                                <StackPanel>
+                            <Border Style="{StaticResource BorderStyle}" Padding="16" MinHeight="300">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Grid.Row="0" Margin="0,0,0,14">
+                                        <TextBlock Text="Windows Default"
+                                                   FontSize="20"
+                                                   FontWeight="Bold"
+                                                   Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="Return control to Windows"
+                                                   Margin="0,4,0,0"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource MainForegroundColor}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1">
+                                        <TextBlock Text="- Removes Windows Update policies applied by WinUtil" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Restores update service startup settings" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Re-enables update scheduled tasks" TextWrapping="Wrap" Margin="0,0,0,12" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="Use this to undo the Recommended or Disable profile."
+                                                   FontSize="11"
+                                                   FontStyle="Italic"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource MainForegroundColor}"/>
+                                    </StackPanel>
+                                    <Button Name="WPFUpdatesdefault"
+                                            Grid.Row="2"
+                                            Content="Restore Defaults"
+                                            FontSize="{DynamicResource ConfigTabButtonFontSize}"
+                                            Margin="0,16,0,0"
+                                            Padding="10"/>
+                                </Grid>
+                            </Border>
+
+                            <Border Style="{StaticResource BorderStyle}" Padding="16" MinHeight="300">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Grid.Row="0" Margin="0,0,0,14">
+                                        <TextBlock Text="Disable Updates"
+                                                   FontSize="20"
+                                                   FontWeight="Bold"
+                                                   Foreground="Red"/>
+                                        <TextBlock Text="Advanced use only"
+                                                   Margin="0,4,0,0"
+                                                   FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="Red"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1">
+                                        <TextBlock Text="- Disables automatic update policy" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Stops update services and scheduled tasks" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Clears downloaded update files" TextWrapping="Wrap" Margin="0,0,0,12" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="Security updates will not be installed while this profile is active."
+                                                   FontSize="11"
+                                                   FontStyle="Italic"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="Red"/>
+                                    </StackPanel>
                                     <Button Name="WPFUpdatesdisable"
+                                            Grid.Row="2"
+                                            Content="Disable Updates"
                                             FontSize="{DynamicResource ConfigTabButtonFontSize}"
-                                            Content="停用所有更新"
                                             Foreground="Red"
-                                            Margin="10,5"
+                                            Margin="0,16,0,0"
                                             Padding="10"/>
-                                    <TextBlock Margin="10"
-                                             TextWrapping="Wrap"
-                                             Foreground="{DynamicResource MainForegroundColor}">
-                                        <Run FontWeight="Bold" Foreground="Red">!! 不建議 !!</Run>
-                                        <LineBreak/>
-                                         - 停用所有 Windows Update
-                                        <LineBreak/>
-                                         - 增加安全性風險
-                                        <LineBreak/>
-                                         - 僅用於隔離的系統
-                                        <LineBreak/><LineBreak/>
-                                        <Run FontStyle="Italic" FontSize="11">警告：沒有安全性更新，你的系統將處於風險之中。</Run>
-                                    </TextBlock>
-                                </StackPanel>
+                                </Grid>
                             </Border>
-                        </Grid>
+                        </UniformGrid>
 
-                        <!-- Future Implementation: Add Windows Version to updates panel -->
-                        <Grid Name="updatespanel" Grid.Row="1" Background="Transparent">
-                        </Grid>
+                        <Border Grid.Row="2" Style="{StaticResource BorderStyle}" Margin="8,14,8,8" Padding="12">
+                            <TextBlock Text="Changes apply system-wide. Restart Windows after switching profiles. Use Restore Defaults to undo WinUtil update policies."
+                                       TextWrapping="Wrap"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource MainForegroundColor}"/>
+                        </Border>
                     </Grid>
                 </ScrollViewer>
             </TabItem>
@@ -13025,8 +13716,9 @@ $inputXML = @'
                             <Border Grid.Row="2" Style="{StaticResource BorderStyle}" Margin="5,15,5,5">
                                 <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Horizontal" HorizontalAlignment="Left">
                                     <TextBlock Padding="10" TextWrapping="Wrap" Foreground="{DynamicResource MainForegroundColor}">
-                                        注意：勾選你想移除的預先安裝 Windows AppX 套件，然後點擊「移除所選」。
-                                        <LineBreak/>這些套件會針對目前使用者及所有新使用者設定檔移除。
+                                        Note: Select the Windows AppX packages you wish to install or remove.
+                                        <LineBreak/>Install Selected registers a local manifest when available, then falls back to the Microsoft Store.
+                                        <LineBreak/>Remove Selected removes packages for the current user and all new user profiles.
                                     </TextBlock>
                                 </StackPanel>
                             </Border>
@@ -13036,12 +13728,21 @@ $inputXML = @'
                     <Border Grid.Row="1" Background="{DynamicResource MainBackgroundColor}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="5" HorizontalAlignment="Stretch" Padding="10">
                         <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                             <Button Name="WPFBackToTweaks" Content="Back to Tweaks" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                            <Button Name="WPFInstallSelectedAppx" Content="Install Selected" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                             <Button Name="WPFRemoveSelectedAppx" Content="移除所選" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                         </WrapPanel>
                     </Border>
                 </Grid>
             </TabItem>
         </TabControl>
+
+        <!-- Window-level progress indicator - visible regardless of active tab -->
+        <Border Name="WPFTweaksProgressBar" Grid.Row="3" Background="{DynamicResource MainBackgroundColor}" Visibility="Collapsed" Padding="10,6">
+            <StackPanel Orientation="Vertical">
+                <TextBlock Name="WPFTweaksProgressLabel" Text="" Foreground="{DynamicResource MainForegroundColor}" FontSize="13" Background="Transparent" Margin="0,0,0,4"/>
+                <ProgressBar Name="WPFTweaksProgressValue" Height="6" Minimum="0" Maximum="100" Value="0" Style="{StaticResource RoundedProgressBarStyle}"/>
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>
 
@@ -13681,9 +14382,6 @@ Invoke-WinutilThemeChange -theme $sync.preferences.theme
 $sync.InitializedTabs = @{}
 Initialize-WinUtilTabContent -TabName "Install"
 
-# Future implementation: Add Windows Version to updates panel
-#Invoke-WPFUIElements -configVariable $sync.configs.updates -targetGridName "updatespanel" -columncount 1
-
 #===========================================================================
 # Store Form Objects In PowerShell
 #===========================================================================
@@ -13724,15 +14422,6 @@ $sync.keys | ForEach-Object {
             }
         }
 
-        if ($($sync["$psitem"].GetType() | Select-Object -ExpandProperty Name) -eq "TextBlock") {
-            if ($sync["$psitem"].Name.EndsWith("Link")) {
-                $sync["$psitem"].Add_MouseUp({
-                    [System.Object]$Sender = $args[0]
-                    Start-Process $Sender.ToolTip -ErrorAction Stop
-                })
-            }
-
-        }
     }
 }
 
@@ -13838,6 +14527,7 @@ $sync["Form"].Add_ContentRendered({
         # Extract screen width and height for the primary monitor
         $screenWidth = $primaryScreen.Bounds.Width
         $screenHeight = $primaryScreen.Bounds.Height
+        $sync.Form.MinWidth = [Math]::Min([double]$sync.Form.MinWidth, [double]$screenWidth)
 
         # Compare with the primary monitor size
         if ($sync.Form.ActualWidth -gt $screenWidth -or $sync.Form.ActualHeight -gt $screenHeight) {
@@ -13893,7 +14583,7 @@ $searchBarTimer.add_Tick({
     $searchBarTimer.Stop()
     switch ($sync.currentTab) {
         "Install" {
-            Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text
+            Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Category $sync.SearchBar.Tag
         }
         "Tweaks" {
             Find-TweaksByNameOrDescription -SearchString $sync.SearchBar.Text
@@ -13904,21 +14594,45 @@ $searchBarTimer.add_Tick({
     }
 })
 $sync["SearchBar"].Add_TextChanged({
+    if ($sync.SearchBar.Tag -ne $sync.SearchBar.Text) {
+        $sync.SearchBar.Tag = $null
+    }
+
     if ($sync.SearchBar.Text -ne "") {
         $sync.SearchBarClearButton.Visibility = "Visible"
+        $sync.SearchBarIcon.Visibility = "Collapsed"
     } else {
         $sync.SearchBarClearButton.Visibility = "Collapsed"
+        $sync.SearchBarIcon.Visibility = "Visible"
     }
+
+    # Category chip handlers apply their filter immediately.
+    if ($sync.SearchBar.Tag -eq $sync.SearchBar.Text) {
+        return
+    }
+
     if ($searchBarTimer.IsEnabled) {
         $searchBarTimer.Stop()
     }
     $searchBarTimer.Start()
 })
 
+# Quick Category Search Chips
+$sync["WPFSearchChipAll"].Add_Click({ Set-WinUtilAppCategoryFilter })
+$sync["WPFSearchChipBrowsers"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Browsers" })
+$sync["WPFSearchChipCommunications"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Communications" })
+$sync["WPFSearchChipDevelopment"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Development" })
+$sync["WPFSearchChipGames"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Games" })
+$sync["WPFSearchChipMicrosoftTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Microsoft Tools" })
+$sync["WPFSearchChipMultimediaTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Multimedia Tools" })
+$sync["WPFSearchChipProTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Pro Tools" })
+$sync["WPFSearchChipSelfhostedTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Selfhosted Tools" })
+$sync["WPFSearchChipUtilities"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Utilities" })
+
 $sync["Form"].Add_Loaded({
     param($e)
     $null = $e
-    $sync.Form.MinWidth = "1000"
+    $sync.Form.MinWidth = "1150"
     $sync["Form"].MaxWidth = [Double]::PositiveInfinity
     $sync["Form"].MaxHeight = [Double]::PositiveInfinity
 })
