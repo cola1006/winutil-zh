@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.07.21
+    Version        : 26.07.22
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.07.21"
+$sync.version = "26.07.22"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -10765,7 +10765,7 @@ $sync.configs.tweaks = @'
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "InvokeScript": [
-      "\n      # Deny permission to remove OneDrive folder\n      icacls $Env:OneDrive /deny \"Administrators:(D,DC)\"\n\n      Write-Host \"Uninstalling OneDrive...\"\n      Start-Process '$Env:SystemRoot\\System32\\OneDriveSetup.exe' -ArgumentList '/uninstall' -Wait\n\n      # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\n      Write-Host \"Removing leftover OneDrive Files...\"\n\n      Stop-Process -Name FileCoAuth,Explorer\n\n      Remove-Item \"$Env:LocalAppData\\Microsoft\\OneDrive\" -Recurse -Force\n      Remove-Item \"$Env:ProgramData\\Microsoft OneDrive\" -Recurse -Force\n\n      # Grant back permission to access OneDrive folder\n      icacls $Env:OneDrive /grant \"Administrators:(D,DC)\"\n\n      if (-not (Get-ChildItem -Path $Env:OneDrive)) {\n          Remove-Item -Path $Env:OneDrive -Recurse\n          [Environment]::SetEnvironmentVariable('OneDrive', $null, 'User')\n      }\n\n      # Disable OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Disabled\n      "
+      "\n      # Deny permission to remove OneDrive folder\n      icacls $Env:OneDrive /deny \"Administrators:(D,DC)\"\n\n      Write-Host \"Uninstalling OneDrive...\"\n      Start-Process -FilePath (Join-Path $Env:SystemRoot \"System32\\OneDriveSetup.exe\") -ArgumentList '/uninstall' -Wait\n\n      # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\n      Write-Host \"Removing leftover OneDrive Files...\"\n\n      Stop-Process -Name FileCoAuth,Explorer\n\n      Remove-Item \"$Env:LocalAppData\\Microsoft\\OneDrive\" -Recurse -Force\n      Remove-Item \"$Env:ProgramData\\Microsoft OneDrive\" -Recurse -Force\n\n      # Grant back permission to access OneDrive folder\n      icacls $Env:OneDrive /grant \"Administrators:(D,DC)\"\n\n      if (-not (Get-ChildItem -Path $Env:OneDrive)) {\n          Remove-Item -Path $Env:OneDrive -Recurse\n          [Environment]::SetEnvironmentVariable('OneDrive', $null, 'User')\n      }\n\n      # Disable OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Disabled\n      "
     ],
     "UndoScript": [
       "\n      Write-Host \"Installing OneDrive\"\n      winget install Microsoft.Onedrive --source winget\n\n      # Enabled OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Automatic\n      "
@@ -11845,7 +11845,7 @@ $inputXML = @'
         xmlns:local="clr-namespace:WinUtility"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True"
-        WindowStyle="None"
+        WindowStyle="SingleBorderWindow"
         Width="Auto"
         Height="Auto"
         MinWidth="800"
