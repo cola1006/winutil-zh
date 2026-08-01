@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.07.31
+    Version        : 26.08.01
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.07.31"
+$sync.version = "26.08.01"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -9604,7 +9604,7 @@ $sync.configs.feature = @'
       "NetFx3"
     ],
     "InvokeScript": [],
-    "link": "https://winutil.christitus.com/dev/features/features/dotnet"
+    "link": "https://winutil.christitus.com/code-reference/features/features/dotnet"
   },
   "WPFFixesNTPPool": {
     "Content": "NTP 伺服器 - 啟用",
@@ -9614,7 +9614,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFFixesNTPPool",
-    "link": "https://winutil.christitus.com/dev/features/fixes/ntppool"
+    "link": "https://winutil.christitus.com/code-reference/features/fixes/ntppool"
   },
   "WPFFeatureshyperv": {
     "Content": "Hyper-V - 啟用",
@@ -9624,7 +9624,7 @@ $sync.configs.feature = @'
     "feature": [
       "Microsoft-Hyper-V-All"
     ],
-    "link": "https://winutil.christitus.com/dev/features/features/hyperv"
+    "link": "https://winutil.christitus.com/code-reference/features/features/hyperv"
   },
   "WPFFeatureslegacymedia": {
     "Content": "傳統媒體元件 (WMP、DirectPlay) - 啟用",
@@ -9638,7 +9638,7 @@ $sync.configs.feature = @'
       "LegacyComponents"
     ],
     "InvokeScript": [],
-    "link": "https://winutil.christitus.com/dev/features/features/legacymedia"
+    "link": "https://winutil.christitus.com/code-reference/features/features/legacymedia"
   },
   "WPFFeaturewsl": {
     "Content": "Windows Subsystem for Linux (WSL) - 啟用",
@@ -9650,7 +9650,7 @@ $sync.configs.feature = @'
       "Microsoft-Windows-Subsystem-Linux"
     ],
     "InvokeScript": [],
-    "link": "https://winutil.christitus.com/dev/features/features/wsl"
+    "link": "https://winutil.christitus.com/code-reference/features/features/wsl"
   },
   "WPFFeaturenfs": {
     "Content": "網路檔案系統 (NFS) - 啟用",
@@ -9669,7 +9669,7 @@ $sync.configs.feature = @'
       "nfsadmin client start",
       "nfsadmin client localhost config fileaccess=755 SecFlavors=+sys -krb5 -krb5i"
     ],
-    "link": "https://winutil.christitus.com/dev/features/features/nfs"
+    "link": "https://winutil.christitus.com/code-reference/features/features/nfs"
   },
   "WPFFeatureRegBackup": {
     "Content": "登錄檔備份（每日排程 12:30am）- 啟用",
@@ -9680,7 +9680,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "\n      New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Configuration Manager' -Name 'EnablePeriodicBackup' -Type DWord -Value 1 -Force\n      New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Configuration Manager' -Name 'BackupCount' -Type DWord -Value 2 -Force\n      $action = New-ScheduledTaskAction -Execute 'schtasks' -Argument '/run /i /tn \"\\Microsoft\\Windows\\Registry\\RegIdleBackup\"'\n      $trigger = New-ScheduledTaskTrigger -Daily -At 00:30\n      Register-ScheduledTask -Action $action -Trigger $trigger -TaskName 'AutoRegBackup' -Description 'Create System Registry Backups' -User 'System'\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/features/features/regbackup"
+    "link": "https://winutil.christitus.com/code-reference/features/features/regbackup"
   },
   "WPFFeatureEnableLegacyRecovery": {
     "Content": "傳統 F8 開機修復 - 啟用",
@@ -9691,7 +9691,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "bcdedit /set bootmenupolicy legacy"
     ],
-    "link": "https://winutil.christitus.com/dev/features/features/enablelegacyrecovery"
+    "link": "https://winutil.christitus.com/code-reference/features/features/enablelegacyrecovery"
   },
   "WPFFeatureDisableLegacyRecovery": {
     "Content": "傳統 F8 開機修復 - 停用",
@@ -9702,7 +9702,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "bcdedit /set bootmenupolicy standard"
     ],
-    "link": "https://winutil.christitus.com/dev/features/features/disablelegacyrecovery"
+    "link": "https://winutil.christitus.com/code-reference/features/features/disablelegacyrecovery"
   },
   "WPFFeaturesSandbox": {
     "Content": "Windows Sandbox - 啟用",
@@ -9712,7 +9712,7 @@ $sync.configs.feature = @'
     "feature": [
       "Containers-DisposableClientVM"
     ],
-    "link": "https://winutil.christitus.com/dev/features/features/sandbox"
+    "link": "https://winutil.christitus.com/code-reference/features/features/sandbox"
   },
   "WPFFeatureInstall": {
     "Content": "安裝功能",
@@ -9721,7 +9721,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFFeatureInstall",
-    "link": "https://winutil.christitus.com/dev/features/features/install"
+    "link": "https://winutil.christitus.com/code-reference/features/features/install"
   },
   "WPFPanelAutologin": {
     "Content": "AutoLogon - 執行",
@@ -9730,7 +9730,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFPanelAutologin",
-    "link": "https://winutil.christitus.com/dev/features/fixes/autologin"
+    "link": "https://winutil.christitus.com/code-reference/features/fixes/autologin"
   },
   "WPFFixesUpdate": {
     "Content": "Windows Update - 重設",
@@ -9739,7 +9739,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFFixesUpdate",
-    "link": "https://winutil.christitus.com/dev/features/fixes/update"
+    "link": "https://winutil.christitus.com/code-reference/features/fixes/update"
   },
   "WPFFixesNetwork": {
     "Content": "網路 - 重設",
@@ -9748,7 +9748,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFFixesNetwork",
-    "link": "https://winutil.christitus.com/dev/features/fixes/network"
+    "link": "https://winutil.christitus.com/code-reference/features/fixes/network"
   },
   "WPFPanelDISM": {
     "Content": "系統損毀掃描 - 執行",
@@ -9757,7 +9757,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFSystemRepair",
-    "link": "https://winutil.christitus.com/dev/features/fixes/dism"
+    "link": "https://winutil.christitus.com/code-reference/features/fixes/dism"
   },
   "WPFFixesWinget": {
     "Content": "WinGet - 重新安裝",
@@ -9766,7 +9766,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFFixesWinget",
-    "link": "https://winutil.christitus.com/dev/features/fixes/winget"
+    "link": "https://winutil.christitus.com/code-reference/features/fixes/winget"
   },
   "WPFPanelComputer": {
     "Content": "電腦管理",
@@ -9777,7 +9777,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "compmgmt.msc"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/computer"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/computer"
   },
   "WPFPanelControl": {
     "Content": "控制台",
@@ -9788,7 +9788,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "control"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/control"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/control"
   },
   "WPFPanelMouse": {
     "Content": "Mouse Properties",
@@ -9799,7 +9799,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "main.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/mouse"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/mouse"
   },
   "WPFPanelNetwork": {
     "Content": "網路連線",
@@ -9810,7 +9810,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "ncpa.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/network"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/network"
   },
   "WPFPanelPower": {
     "Content": "電源面板",
@@ -9821,7 +9821,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "powercfg.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/power"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/power"
   },
   "WPFPanelPrinter": {
     "Content": "印表機面板",
@@ -9832,7 +9832,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "Start-Process 'shell:::{A8A91A66-3A7D-4424-8D24-04E180695C7A}'"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/printer"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/printer"
   },
   "WPFPanelPrograms": {
     "Content": "Programs and Features",
@@ -9843,7 +9843,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "appwiz.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/programs"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/programs"
   },
   "WPFPanelRegion": {
     "Content": "地區",
@@ -9854,7 +9854,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "intl.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/region"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/region"
   },
   "WPFPanelSecurity": {
     "Content": "Security and Maintenance",
@@ -9865,7 +9865,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "wscui.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/security"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/security"
   },
   "WPFPanelSound": {
     "Content": "音效設定",
@@ -9876,7 +9876,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "mmsys.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/sound"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/sound"
   },
   "WPFPanelSystem": {
     "Content": "系統內容",
@@ -9887,7 +9887,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "sysdm.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/system"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/system"
   },
   "WPFPanelTimedate": {
     "Content": "時間與日期",
@@ -9898,7 +9898,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "timedate.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/timedate"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/timedate"
   },
   "WPFPanelFirewall": {
     "Content": "Windows Defender Firewall",
@@ -9909,7 +9909,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "firewall.cpl"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/firewall"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/firewall"
   },
   "WPFPanelRestore": {
     "Content": "Windows 還原",
@@ -9920,7 +9920,7 @@ $sync.configs.feature = @'
     "InvokeScript": [
       "rstrui.exe"
     ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/restore"
+    "link": "https://winutil.christitus.com/code-reference/features/legacy-windows-panels/restore"
   },
   "WPFWinUtilInstallPSProfile": {
     "Content": "CTT PowerShell Profile - 安裝",
@@ -9929,7 +9929,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WinUtilInstallPSProfile",
-    "link": "https://winutil.christitus.com/dev/features/powershell-profile-powershell-7--only/installpsprofile"
+    "link": "https://winutil.christitus.com/code-reference/features/powershell-profile-powershell-7--only/installpsprofile"
   },
   "WPFWinUtilUninstallPSProfile": {
     "Content": "CTT PowerShell Profile - 移除",
@@ -9938,7 +9938,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WinUtilUninstallPSProfile",
-    "link": "https://winutil.christitus.com/dev/features/powershell-profile-powershell-7--only/uninstallpsprofile"
+    "link": "https://winutil.christitus.com/code-reference/features/powershell-profile-powershell-7--only/uninstallpsprofile"
   },
   "WPFWinUtilSSHServer": {
     "Content": "OpenSSH 伺服器 - 啟用",
@@ -9947,7 +9947,7 @@ $sync.configs.feature = @'
     "Type": "Button",
     "ButtonWidth": "300",
     "function": "Invoke-WPFSSHServer",
-    "link": "https://winutil.christitus.com/dev/features/remote-access/sshserver"
+    "link": "https://winutil.christitus.com/code-reference/features/remote-access/sshserver"
   }
 }
 '@ | ConvertFrom-Json
@@ -10171,7 +10171,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/activity"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/activity"
   },
   "WPFTweaksHiber": {
     "Content": "休眠 - 停用",
@@ -10200,7 +10200,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "powercfg.exe /hibernate on"
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/hiber"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/hiber"
   },
   "WPFTweaksWidget": {
     "Content": "小工具 - 移除",
@@ -10210,7 +10210,7 @@ $sync.configs.tweaks = @'
     "InvokeScript": [
       "\n      # Sometimes if you dont stop the Widgets process the removal may fail\n\n      Get-Process *Widget* | Stop-Process\n      Get-AppxPackage Microsoft.WidgetsPlatformRuntime -AllUsers | Remove-AppxPackage -AllUsers\n      Get-AppxPackage MicrosoftWindows.Client.WebExperience -AllUsers | Remove-AppxPackage -AllUsers\n\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\n      Write-Host \"Removed widgets\"\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/widget"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/widget"
   },
   "WPFTweaksRevertStartMenu": {
     "Content": "開始功能表舊版配置 - 啟用",
@@ -10226,7 +10226,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/revertstartmenu"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/revertstartmenu"
   },
   "WPFTweaksDisableStoreSearch": {
     "Content": "Microsoft Store 推薦搜尋結果 - 停用",
@@ -10239,7 +10239,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /grant Everyone:F"
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/disablestoresearch"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/disablestoresearch"
   },
   "WPFTweaksLocation": {
     "Content": "位置追蹤 - 停用",
@@ -10276,7 +10276,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "1"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/location"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/location"
   },
   "WPFTweaksServices": {
     "Content": "服務 - 設為手動",
@@ -10313,7 +10313,7 @@ $sync.configs.tweaks = @'
     "InvokeScript": [
       "\n      $Memory = (Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum / 1KB\n      Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\" -Name SvcHostSplitThresholdInKB -Value $Memory\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/services"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/services"
   },
   "WPFTweaksBraveDebloat": {
     "Content": "Brave Browser - 移除臃腫元件",
@@ -10406,7 +10406,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/bravedebloat"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/bravedebloat"
   },
   "WPFTweaksDisableWarningForUnsignedRdp": {
     "Content": "RDP 未簽署檔案警告 - 停用",
@@ -10429,7 +10429,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablewarningforunsignedrdp"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disablewarningforunsignedrdp"
   },
   "WPFTweaksEdgeDebloat": {
     "Content": "Microsoft Edge - 精簡化",
@@ -10557,7 +10557,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/edgedebloat"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/edgedebloat"
   },
   "WPFTweaksConsumerFeatures": {
     "Content": "消費者功能 - 停用",
@@ -10573,7 +10573,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/consumerfeatures"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/consumerfeatures"
   },
   "WPFTweaksTelemetry": {
     "Content": "遙測 - 停用",
@@ -10672,7 +10672,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      # Enable Defender Auto Sample Submission\n      Set-MpPreference -SubmitSamplesConsent 1\n\n      # Enable (Connected User Experiences and Telemetry) Service\n      Set-Service -Name diagtrack -StartupType Automatic\n\n      # Enable (Windows Error Reporting Manager) Service\n      Set-Service -Name wermgr -StartupType Automatic\n\n      # Enable PowerShell 7 telemetry\n      [Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '', 'Machine')\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/telemetry"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/telemetry"
   },
   "WPFTweaksDeliveryOptimization": {
     "Content": "傳遞最佳化 - 停用",
@@ -10688,7 +10688,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/deliveryoptimization"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/deliveryoptimization"
   },
   "WPFTweaksRemoveEdge": {
     "Content": "Microsoft Edge - 移除",
@@ -10701,7 +10701,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Write-Host \"Installing Microsoft Edge...\"\n      winget install Microsoft.Edge --source winget\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removeedge"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/removeedge"
   },
   "WPFTweaksDisableBitLocker": {
     "Content": "BitLocker - 停用",
@@ -10714,7 +10714,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "Enable-BitLocker -MountPoint $Env:SystemDrive"
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/disablebitlocker"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/disablebitlocker"
   },
   "WPFTweaksUTC": {
     "Content": "日期與時間 - 將時間設為 UTC",
@@ -10730,7 +10730,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "0"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/utc"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/utc"
   },
   "WPFTweaksRemoveOneDrive": {
     "Content": "Microsoft OneDrive - 移除",
@@ -10743,7 +10743,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Write-Host \"Installing OneDrive\"\n      winget install Microsoft.Onedrive --source winget\n\n      # Enabled OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Automatic\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removeonedrive"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/removeonedrive"
   },
   "WPFTweaksRemoveHomeAndGallery": {
     "Content": "檔案總管首頁與圖庫 - 停用",
@@ -10773,7 +10773,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removehomeandgallery"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/removehomeandgallery"
   },
   "WPFTweaksDisplay": {
     "Content": "視覺效果 - 設為最佳效能",
@@ -10872,7 +10872,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "Remove-ItemProperty -Path \"HKCU:\\Control Panel\\Desktop\" -Name \"UserPreferencesMask\""
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/display"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/display"
   },
   "WPFTweaksReservedStorage": {
     "Content": "停用保留儲存空間",
@@ -10885,7 +10885,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "DISM /Online /Set-ReservedStorageState /State:Enabled"
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/reservedstorage"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/reservedstorage"
   },
   "WPFTweaksRestorePoint": {
     "Content": "還原點 - 建立",
@@ -10905,7 +10905,7 @@ $sync.configs.tweaks = @'
     "InvokeScript": [
       "\n      if (-not (Get-ComputerRestorePoint)) {\n          Enable-ComputerRestore -Drive $Env:SystemDrive\n      }\n\n      Checkpoint-Computer -Description \"System Restore Point created by WinUtil\" -RestorePointType MODIFY_SETTINGS\n      Write-Host \"System Restore Point Created Successfully\" -ForegroundColor Green\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/restorepoint"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/restorepoint"
   },
   "WPFTweaksEndTaskOnTaskbar": {
     "Content": "以右鍵結束工作 - 啟用",
@@ -10921,7 +10921,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/endtaskontaskbar"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/endtaskontaskbar"
   },
   "WPFTweaksStorage": {
     "Content": "儲存空間感知 - 停用",
@@ -10937,7 +10937,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "1"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/storage"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/storage"
   },
   "WPFTweaksWindowsAI": {
     "Content": "Windows AI - 停用並移除",
@@ -10963,7 +10963,7 @@ $sync.configs.tweaks = @'
     "InvokeScript": [
       "\n      $Appx = (Get-AppxPackage MicrosoftWindows.Client.CoreAI).PackageFullName\n      $Sid = (Get-LocalUser $Env:UserName).Sid.Value\n\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Appx\\AppxAllUserStore\\EndOfLife\\$Sid\\$Appx\" -Force\n\n      Get-AppxPackage -AllUsers \"*Copilot*\" | Remove-AppxPackage -AllUsers\n      winget uninstall -e --name \"Copilot\" --silent --force --accept-source-agreements 2>$null\n      Get-AppxPackage -AllUsers Microsoft.MicrosoftOfficeHub | Remove-AppxPackage -AllUsers\n\n      if ($Appx) {\n          Remove-AppxPackage $Appx\n      }\n\n      Set-Service -Name WSAIFabricSvc -StartupType Disabled\n      Disable-WindowsOptionalFeature -FeatureName Recall -Online -NoRestart\n\n      Write-Host \"Windows AI Disabled\"\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/windowsai"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/windowsai"
   },
   "WPFTweaksWPBT": {
     "Content": "Windows Platform Binary Table (WPBT) - 停用",
@@ -10979,7 +10979,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/wpbt"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/wpbt"
   },
   "WPFTweaksPreventDeviceMetadataFromNetwork": {
     "Content": "Prevent Device Companion Apps",
@@ -10995,7 +10995,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/preventdevicemetadatafromnetwork"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/preventdevicemetadatafromnetwork"
   },
   "WPFTweaksRazerBlock": {
     "Content": "Razer 軟體自動安裝 - 停用",
@@ -11024,7 +11024,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      icacls \"$Env:SystemRoot\\Installer\\Razer\" /remove:d Everyone\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/razerblock"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/razerblock"
   },
   "WPFTweaksDisableNotifications": {
     "Content": "系統匣通知與行事曆 - 停用",
@@ -11047,7 +11047,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "1"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablenotifications"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disablenotifications"
   },
   "WPFTweaksBlockAdobeNet": {
     "Content": "Adobe URL 封鎖清單 - 啟用",
@@ -11060,7 +11060,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Set-Content \"$Env:SystemRoot\\System32\\drivers\\etc\\hosts\" (\n          (Get-Content \"$Env:SystemRoot\\System32\\drivers\\etc\\hosts\") -join \"`n\" -replace '(?s)#New Ver.*', ''\n      )\n\n      ipconfig /flushdns\n      Write-Host 'Removed Adobe url block list from host file'\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/blockadobenet"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/blockadobenet"
   },
   "WPFTweaksRightClickMenu": {
     "Content": "右鍵選單舊版配置 - 啟用",
@@ -11073,7 +11073,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "Remove-Item -Path \"HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\" -Recurse"
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/rightclickmenu"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/rightclickmenu"
   },
   "WPFTweaksDiskCleanup": {
     "Content": "磁碟清理 - 執行",
@@ -11083,7 +11083,7 @@ $sync.configs.tweaks = @'
     "InvokeScript": [
       "\n      cleanmgr.exe /d C: /VERYLOWDISK\n      Dism.exe /online /Cleanup-Image /StartComponentCleanup /ResetBase\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/diskcleanup"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/diskcleanup"
   },
   "WPFTweaksDeleteTempFiles": {
     "Content": "暫存檔 - 移除",
@@ -11093,7 +11093,7 @@ $sync.configs.tweaks = @'
     "InvokeScript": [
       "\n      Remove-Item -Path \"$Env:Temp\\*\" -Recurse -Force\n      Remove-Item -Path \"$Env:SystemRoot\\Temp\\*\" -Recurse -Force\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/deletetempfiles"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/deletetempfiles"
   },
   "WPFTweaksIPv46": {
     "Content": "IPv6 - 將 IPv4 設為優先",
@@ -11109,7 +11109,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "0"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/ipv46"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/ipv46"
   },
   "WPFTweaksTeredo": {
     "Content": "Teredo - 停用",
@@ -11131,7 +11131,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "netsh interface teredo set state default"
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/teredo"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/teredo"
   },
   "WPFTweaksDisableIPv6": {
     "Content": "IPv6 - 停用",
@@ -11153,7 +11153,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "Enable-NetAdapterBinding -Name * -ComponentID ms_tcpip6"
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disableipv6"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disableipv6"
   },
   "WPFTweaksDisableBGapps": {
     "Content": "背景應用程式 - 停用",
@@ -11169,7 +11169,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "0"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablebgapps"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disablebgapps"
   },
   "WPFTweaksDisableFSO": {
     "Content": "全螢幕最佳化 - 停用",
@@ -11185,7 +11185,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "0"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablefso"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disablefso"
   },
   "WPFTweaksDisableExplorerAutoDiscovery": {
     "Content": "檔案總管自動資料夾探索 - 停用",
@@ -11198,7 +11198,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      # Previously detected folders\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\n\n      # Folder types lookup table\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\n\n      # Flush Explorer view database\n      Remove-Item -Path $bags -Recurse -Force\n      Write-Host \"Removed $bags\"\n\n      Remove-Item -Path $bagMRU -Recurse -Force\n      Write-Host \"Removed $bagMRU\"\n\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/disableexplorerautodiscovery"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/disableexplorerautodiscovery"
   },
   "WPFToggleDetailedBSoD": {
     "Content": "藍色當機畫面詳細模式",
@@ -11224,7 +11224,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "false"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/detailedbsod"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/detailedbsod"
   },
   "WPFToggleBatteryPercentage": {
     "Content": "系統匣電池百分比",
@@ -11242,7 +11242,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "false"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/batterypercentage"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/batterypercentage"
   },
   "WPFToggleDarkMode": {
     "Content": "Windows 深色主題",
@@ -11274,7 +11274,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Invoke-WinUtilExplorerUpdate\n      if ($sync.ThemeButton.Content -eq [char]0xF08C) {\n        Invoke-WinutilThemeChange -theme \"Auto\"\n      }\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/darkmode"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/darkmode"
   },
   "WPFToggleShowExt": {
     "Content": "檔案總管副檔名",
@@ -11298,7 +11298,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/showext"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/showext"
   },
   "WPFToggleHiddenFiles": {
     "Content": "檔案總管隱藏檔案",
@@ -11322,7 +11322,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/hiddenfiles"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/hiddenfiles"
   },
   "WPFToggleVerboseLogon": {
     "Content": "登入詳細資訊模式",
@@ -11340,7 +11340,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "false"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/verboselogon"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/verboselogon"
   },
   "WPFToggleNewOutlook": {
     "Content": "Microsoft Outlook 新版",
@@ -11382,7 +11382,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/newoutlook"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/newoutlook"
   },
   "WPFToggleScrollbars": {
     "Content": "捲軸永遠顯示",
@@ -11401,7 +11401,7 @@ $sync.configs.tweaks = @'
         "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/scrollbars"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/scrollbars"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/scrollbars"
   },
   "WPFToggleMultiplaneOverlay": {
     "Content": "多平面重疊 (Multiplane Overlay)",
@@ -11427,7 +11427,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/multiplaneoverlay"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/multiplaneoverlay"
   },
   "WPFToggleMouseAcceleration": {
     "Content": "滑鼠加速",
@@ -11461,7 +11461,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/mouseacceleration"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/mouseacceleration"
   },
   "WPFToggleNumLock": {
     "Content": "開機時啟用 Num Lock",
@@ -11487,7 +11487,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "false"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/numlock"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/numlock"
   },
   "WPFToggleWindowSnapping": {
     "Content": "視窗貼齊",
@@ -11505,7 +11505,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/windowsnapping"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/windowsnapping"
   },
   "WPFToggleStandbyFix": {
     "Content": "S0 睡眠網路連線",
@@ -11523,7 +11523,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/standbyfix"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/standbyfix"
   },
   "WPFToggleS3Sleep": {
     "Content": "S3 睡眠",
@@ -11541,7 +11541,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "false"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/s3sleep"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/s3sleep"
   },
   "WPFToggleHideSettingsHome": {
     "Content": "設定首頁",
@@ -11559,7 +11559,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/hidesettingshome"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/hidesettingshome"
   },
   "WPFToggleBingSearch": {
     "Content": "開始功能表 Bing 搜尋",
@@ -11577,7 +11577,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/bingsearch"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/bingsearch"
   },
   "WPFToggleLoginBlur": {
     "Content": "登入畫面壓克力模糊",
@@ -11595,7 +11595,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/loginblur"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/loginblur"
   },
   "WPFTweaksDisableLockscreen": {
     "Content": "鎖定畫面 - 停用",
@@ -11612,7 +11612,7 @@ $sync.configs.tweaks = @'
         "OriginalValue": "<RemoveEntry>"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/disablelockscreen"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/disablelockscreen"
   },
   "WPFToggleStartMenuRecommendations": {
     "Content": "開始功能表推薦項目",
@@ -11652,7 +11652,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/startmenurecommendations"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/startmenurecommendations"
   },
   "WPFToggleStickyKeys": {
     "Content": "相黏鍵",
@@ -11670,7 +11670,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/stickykeys"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/stickykeys"
   },
   "WPFToggleTaskbarAlignment": {
     "Content": "工作列置中圖示",
@@ -11694,7 +11694,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\n      "
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskbaralignment"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/taskbaralignment"
   },
   "WPFToggleTaskbarSearch": {
     "Content": "工作列搜尋圖示",
@@ -11712,7 +11712,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskbarsearch"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/taskbarsearch"
   },
   "WPFToggleTaskView": {
     "Content": "工作列工作檢視圖示",
@@ -11730,7 +11730,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskview"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/taskview"
   },
   "WPFToggleGameMode": {
     "Content": "遊戲模式",
@@ -11756,7 +11756,7 @@ $sync.configs.tweaks = @'
         "DefaultState": "true"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/gamemode"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/gamemode"
   },
   "WPFToggleLongPaths": {
     "Content": "啟用長路徑",
@@ -11774,14 +11774,14 @@ $sync.configs.tweaks = @'
         "DefaultState": "false"
       }
     ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/longpaths"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/longpaths"
   },
   "WPFOOSUbutton": {
     "Content": "O&O ShutUp10++ - 執行",
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "Type": "Button",
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/oosubutton"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/oosubutton"
   },
   "WPFchangedns": {
     "Content": "DNS - 設定為：",
@@ -11789,7 +11789,7 @@ $sync.configs.tweaks = @'
     "panel": "1",
     "Type": "Combobox",
     "ComboItems": "Default DHCP Google Cloudflare Cloudflare_Malware Cloudflare_Malware_Adult Open_DNS Quad9 AdGuard_Ads_Trackers AdGuard_Ads_Trackers_Malware_Adult",
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/changedns"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/changedns"
   },
   "WPFAddUltPerf": {
     "Content": "極致效能設定檔 - 啟用",
@@ -11797,7 +11797,7 @@ $sync.configs.tweaks = @'
     "panel": "2",
     "Type": "Button",
     "ButtonWidth": "300",
-    "link": "https://winutil.christitus.com/dev/tweaks/performance-plans---not-for-laptops/addultperf"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/performance-plans---not-for-laptops/addultperf"
   },
   "WPFRemoveUltPerf": {
     "Content": "極致效能設定檔 - 停用",
@@ -11805,7 +11805,7 @@ $sync.configs.tweaks = @'
     "panel": "2",
     "Type": "Button",
     "ButtonWidth": "300",
-    "link": "https://winutil.christitus.com/dev/tweaks/performance-plans---not-for-laptops/removeultperf"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/performance-plans---not-for-laptops/removeultperf"
   }
 }
 '@ | ConvertFrom-Json
