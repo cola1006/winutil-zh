@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.08.02
+    Version        : 26.08.03
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.08.02"
+$sync.version = "26.08.03"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -3837,28 +3837,12 @@ function Reset-WPFCheckBoxes {
         [Parameter(position=1)]
         [string]$checkboxfilterpattern = "**"
     )
+    $selectedSet = [System.Collections.Generic.HashSet[string]]::new([string[]]@($sync.selectedApps + $sync.selectedTweaks + $sync.selectedFeatures + $sync.selectedAppx), [StringComparer]::OrdinalIgnoreCase)
 
-    $CheckBoxesToCheck = $sync.selectedApps + $sync.selectedTweaks + $sync.selectedFeatures + $sync.selectedAppx
-    $CheckBoxes = foreach ($syncEntry in $sync.GetEnumerator()) {
+    foreach ($syncEntry in $sync.GetEnumerator()) {
         if ($syncEntry.Value -is [System.Windows.Controls.CheckBox] -and $syncEntry.Name -notlike "WPFToggle*" -and $syncEntry.Name -like $checkboxfilterpattern) {
-            $syncEntry
-        }
-    }
-
-    foreach ($CheckBox in $CheckBoxes) {
-        $checkboxName = $CheckBox.Key
-        if (-not $CheckBoxesToCheck) {
-            $sync.$checkBoxName.IsChecked = $false
-            continue
-        }
-
-        # Check if the checkbox name exists in the flattened JSON hashtable
-        if ($CheckBoxesToCheck -contains $checkboxName) {
-            # If it exists, set IsChecked to true
-            $sync.$checkboxName.IsChecked = $true
-        } else {
-            # If it doesn't exist, set IsChecked to false
-            $sync.$checkboxName.IsChecked = $false
+            $checkboxName = $syncEntry.Key
+            $sync.$checkboxName.IsChecked = $selectedSet.Contains($checkboxName)
         }
     }
 
@@ -3874,10 +3858,9 @@ function Reset-WPFCheckBoxes {
         # Only act on toggles that are explicitly listed in the import - toggles absent
         # from the export file were not part of the saved config and should keep whatever
         # state the live system already has (set during UI initialisation via Get-WinUtilToggleStatus).
-        $importedToggles = $sync.selectedToggles
-        $allToggles = $sync.GetEnumerator() | Where-Object { $_.Key -like "WPFToggle*" -and $_.Value -is [System.Windows.Controls.CheckBox] }
-        foreach ($toggle in $allToggles) {
-            if ($importedToggles -contains $toggle.Key) {
+        $importedToggles = [System.Collections.Generic.HashSet[string]]::new([string[]]@($sync.selectedToggles), [StringComparer]::OrdinalIgnoreCase)
+        foreach ($toggle in $sync.GetEnumerator()) {
+            if ($toggle.Key -like "WPFToggle*" -and $toggle.Value -is [System.Windows.Controls.CheckBox] -and $importedToggles.Contains($toggle.Key)) {
                 $sync[$toggle.Key].IsChecked = $true
             }
             # Toggles not present in the import are intentionally left untouched;
@@ -5784,19 +5767,21 @@ function Invoke-WPFInstall {
     .SYNOPSIS
         Installs the selected programs using winget, if one or more of the selected programs are already installed on the system, winget will try and perform an upgrade if there's a newer version to install.
     #>
-
-    $PackagesToInstall = $sync.selectedApps | Foreach-Object { $sync.configs.applicationsHashtable.$_ }
+    param(
+        [Parameter(Mandatory = $false)]
+        [PSObject[]]$PackagesToInstall = $($sync.selectedApps | Foreach-Object { $sync.configs.applicationsHashtable.$_ })
+    )
 
 
     if($sync.ProcessRunning) {
         $msg = "[Invoke-WPFInstall] 目前有一個安裝程序正在執行中。"
-        Show-WinUtilMessage -Message $msg -Title "Winutil" -Button "OK" -Icon "Warning"
+        Show-WinUtilMessage -Message $msg -Title "WinUtil" -Button "OK" -Icon "Warning"
         return
     }
 
     if ($PackagesToInstall.Count -eq 0) {
         $WarningMsg = "請選擇要安裝或升級的程式。"
-        Show-WinUtilMessage -Message $WarningMsg -Title $AppTitle -Button "OK" -Icon "Warning"
+        Show-WinUtilMessage -Message $WarningMsg -Title "WinUtil" -Button "OK" -Icon "Warning"
         return
     }
 
@@ -6065,8 +6050,8 @@ function Invoke-WPFPresets {
         "WPFTweak*" { $sync.selectedTweaks = [System.Collections.Generic.List[string]]::new() }
         "WPFInstall*" { $sync.selectedApps = [System.Collections.Generic.List[string]]::new() }
         "WPFAppx*" { $sync.selectedAppx = [System.Collections.Generic.List[string]]::new() }
-        "WPFeatures" { $sync.selectedFeatures = [System.Collections.Generic.List[string]]::new() }
-        "WPFToggle" { $sync.selectedToggles = [System.Collections.Generic.List[string]]::new() }
+        "WPFFeature*" { $sync.selectedFeatures = [System.Collections.Generic.List[string]]::new() }
+        "WPFToggle*" { $sync.selectedToggles = [System.Collections.Generic.List[string]]::new() }
         default {}
     }
 
@@ -6779,6 +6764,7 @@ function Invoke-WPFUIElements {
                             $groupStackPanel = New-Object Windows.Controls.StackPanel
                             $groupStackPanel.Orientation = "Vertical"
                             [System.Windows.Automation.AutomationProperties]::SetName($groupStackPanel, $entryInfo.GroupName)
+                            $radioButtonGroups[$entryInfo.GroupName] = $groupStackPanel
 
                             # Add the group container to the ItemsControl
                             $itemsControl.Items.Add($groupStackPanel) | Out-Null
@@ -6985,13 +6971,13 @@ function Invoke-WPFUnInstall {
 
     if($sync.ProcessRunning) {
         $msg = "[Invoke-WPFUnInstall] 目前有一個安裝程序正在執行中"
-        Show-WinUtilMessage -Message $msg -Title "Winutil" -Button "OK" -Icon "Warning"
+        Show-WinUtilMessage -Message $msg -Title "WinUtil" -Button "OK" -Icon "Warning"
         return
     }
 
     if ($PackagesToUninstall.Count -eq 0) {
         $WarningMsg = "請選擇要解除安裝的程式"
-        Show-WinUtilMessage -Message $WarningMsg -Title $AppTitle -Button "OK" -Icon "Warning"
+        Show-WinUtilMessage -Message $WarningMsg -Title "WinUtil" -Button "OK" -Icon "Warning"
         return
     }
 
@@ -11397,8 +11383,7 @@ $sync.configs.tweaks = @'
         "Value": "0",
         "Type": "DWord",
         "OriginalValue": "1",
-        "DefaultState": "false",
-        "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/scrollbars"
+        "DefaultState": "false"
       }
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/scrollbars"
