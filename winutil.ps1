@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.08.03
+    Version        : 26.08.04
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.08.03"
+$sync.version = "26.08.04"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -5234,12 +5234,12 @@ function Invoke-WPFButton {
             }
         }
         "WPFCloseButton" {$sync.Form.Close(); Write-Host "Bye bye!"}
-        "WPFMinimizeButton" {$sync.Form.WindowState = [Windows.WindowState]::Minimized}
+        "WPFMinimizeButton" {[Windows.SystemCommands]::MinimizeWindow($sync.Form)}
         "WPFMaximizeButton" {
             if ($sync.Form.WindowState -eq [Windows.WindowState]::Normal) {
-                $sync.Form.WindowState = [Windows.WindowState]::Maximized
+                [Windows.SystemCommands]::MaximizeWindow($sync.Form)
             } else {
-                $sync.Form.WindowState = [Windows.WindowState]::Normal
+                [Windows.SystemCommands]::RestoreWindow($sync.Form)
             }
         }
         "WPFselectedAppsButton" {$sync.selectedAppsPopup.IsOpen = -not $sync.selectedAppsPopup.IsOpen}
@@ -7350,7 +7350,7 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstalladobe": {
-    "category": "多媒體工具",
+    "category": "Document",
     "choco": "adobereader",
     "content": "Adobe Acrobat Reader",
     "description": "Adobe Acrobat Reader 是一款免費的 PDF 檢視器，具備檢視、列印與註解 PDF 文件的基本功能。",
@@ -7790,6 +7790,15 @@ $sync.configs.applications = @'
     "winget": "flux.flux",
     "foss": false
   },
+  "WPFInstallfoxpdfreader": {
+    "category": "Document",
+    "choco": "foxitreader",
+    "content": "Foxit PDF Reader",
+    "description": "Foxit PDF Reader is a free PDF viewer with a familiar ribbon-style interface.",
+    "link": "https://www.foxit.com/pdf-reader/",
+    "winget": "Foxit.FoxitReader",
+    "foss": false
+  },
   "WPFInstallgeforcenow": {
     "category": "遊戲",
     "choco": "nvidia-geforce-now",
@@ -8033,6 +8042,15 @@ $sync.configs.applications = @'
     "winget": "sylikc.JPEGView",
     "foss": true
   },
+  "WPFInstalljoplin": {
+    "category": "Document",
+    "choco": "joplin",
+    "content": "Joplin",
+    "description": "Joplin is an open-source note-taking and to-do application with synchronization capabilities.",
+    "link": "https://joplinapp.org/",
+    "winget": "Joplin.Joplin",
+    "foss": true
+  },
   "WPFInstallkeepassxc": {
     "category": "工具程式",
     "choco": "keepassxc",
@@ -8070,7 +8088,7 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstalllibreoffice": {
-    "category": "多媒體工具",
+    "category": "Document",
     "choco": "libreoffice-fresh",
     "content": "LibreOffice",
     "description": "LibreOffice 是一套功能強大的免費辦公軟體，並與其他主流辦公軟體相容。",
@@ -8214,9 +8232,9 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstallnaps2": {
-    "category": "多媒體工具",
+    "category": "Document",
     "choco": "naps2",
-    "content": "NAPS2 (Document Scanner)",
+    "content": "NAPS2 (Scanner)",
     "description": "NAPS2 是一款文件掃描應用程式，可簡化建立電子文件的流程。",
     "link": "https://www.naps2.com/",
     "winget": "Cyanfish.NAPS2",
@@ -8312,13 +8330,22 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstallobsidian": {
-    "category": "多媒體工具",
+    "category": "Document",
     "choco": "obsidian",
     "content": "Obsidian",
     "description": "Obsidian 是一款功能強大的筆記與知識管理應用程式。",
     "link": "https://obsidian.md/",
     "winget": "Obsidian.Obsidian",
     "foss": false
+  },
+  "WPFInstallokular": {
+    "category": "Document",
+    "choco": "okular",
+    "content": "Okular",
+    "description": "Okular is a versatile document viewer with advanced features.",
+    "link": "https://okular.kde.org/",
+    "winget": "KDE.Okular",
+    "foss": true
   },
   "WPFInstallonedrive": {
     "category": "Microsoft 工具",
@@ -8330,7 +8357,7 @@ $sync.configs.applications = @'
     "foss": false
   },
   "WPFInstallonlyoffice": {
-    "category": "多媒體工具",
+    "category": "Document",
     "choco": "onlyoffice",
     "content": "ONLYOFFICE Desktop",
     "description": "ONLYOFFICE Desktop 是一套完整的辦公軟體，用於文件編輯與協作。",
@@ -8417,6 +8444,42 @@ $sync.configs.applications = @'
     "description": "PeaZip 是一款免費、開放原始碼的檔案壓縮工具，支援多種壓縮格式並提供加密功能。",
     "link": "https://peazip.github.io/",
     "winget": "Giorgiotani.Peazip",
+    "foss": true
+  },
+  "WPFInstallpdf-xchange": {
+    "category": "Document",
+    "choco": "pdfxchangeeditor",
+    "content": "PDF-XChange Editor",
+    "description": "A comprehensive Windows-based software suite and editor for creating, viewing, editing, annotating, and signing PDF files.",
+    "link": "https://www.pdf-xchange.com/",
+    "winget": "TrackerSoftware.PDF-XChangeEditor",
+    "foss": false
+  },
+  "WPFInstallpdf24creator": {
+    "category": "Document",
+    "choco": "pdf24",
+    "content": "PDF24 Creator",
+    "description": "Free and easy-to-use online/desktop PDF tools that make you more productive",
+    "link": "https://tools.pdf24.org/en/creator",
+    "winget": "geeksoftwareGmbH.PDF24Creator",
+    "foss": false
+  },
+  "WPFInstallpdfgear": {
+    "category": "Document",
+    "choco": "pdfgear",
+    "content": "PDFgear",
+    "description": "PDFgear is a piece of full-featured PDF management software for Windows, macOS, and mobile, and it's completely free to use.",
+    "link": "https://www.pdfgear.com/",
+    "winget": "PDFgear.PDFgear",
+    "foss": false
+  },
+  "WPFInstallpdfsam": {
+    "category": "Document",
+    "choco": "pdfsam",
+    "content": "PDFsam Basic",
+    "description": "PDFsam Basic is a free and open-source tool for splitting, merging, and rotating PDF files.",
+    "link": "https://pdfsam.org/",
+    "winget": "PDFsam.PDFsam",
     "foss": true
   },
   "WPFInstallplaynite": {
@@ -8671,6 +8734,15 @@ $sync.configs.applications = @'
     "winget": "WhirlwindFX.SignalRgb",
     "foss": false
   },
+  "WPFInstallsimplenote": {
+    "category": "Document",
+    "choco": "simplenote",
+    "content": "Simplenote",
+    "description": "Simplenote is an easy way to keep notes, lists, ideas and more.",
+    "link": "https://simplenote.com/",
+    "winget": "Automattic.Simplenote",
+    "foss": true
+  },
   "WPFInstallsimplewall": {
     "category": "Pro Tools",
     "choco": "simplewall",
@@ -8715,6 +8787,15 @@ $sync.configs.applications = @'
     "link": "https://www.sublimetext.com/",
     "winget": "SublimeHQ.SublimeText.4",
     "foss": false
+  },
+  "WPFInstallsumatra": {
+    "category": "Document",
+    "choco": "sumatrapdf",
+    "content": "Sumatra PDF",
+    "description": "Sumatra PDF is a lightweight and fast PDF viewer with minimalistic design.",
+    "link": "https://www.sumatrapdfreader.org/free-pdf-reader.html",
+    "winget": "SumatraPDF.SumatraPDF",
+    "foss": true
   },
   "WPFInstallsunshine": {
     "category": "自架工具",
@@ -9058,6 +9139,15 @@ $sync.configs.applications = @'
     "winget": "MHNexus.HxD",
     "foss": false
   },
+  "WPFInstallxournal": {
+    "category": "Document",
+    "choco": "xournalplusplus",
+    "content": "Xournal++",
+    "description": "Xournal++ is an open-source handwriting notetaking software with PDF annotation capabilities.",
+    "link": "https://xournalpp.github.io/",
+    "winget": "Xournal++.Xournal++",
+    "foss": true
+  },
   "WPFInstallyarn": {
     "category": "開發",
     "choco": "yarn",
@@ -9137,6 +9227,15 @@ $sync.configs.applications = @'
     "description": "Zed 是一款現代、高效能的程式碼編輯器，從底層設計即著重於速度與協作。",
     "link": "https://zed.dev/",
     "winget": "ZedIndustries.Zed",
+    "foss": true
+  },
+  "WPFInstallzotero": {
+    "category": "Document",
+    "choco": "zotero",
+    "content": "Zotero",
+    "description": "Zotero is a free, easy-to-use tool to help you collect, organize, cite, and share your research materials.",
+    "link": "https://www.zotero.org/",
+    "winget": "DigitalScholar.Zotero",
     "foss": true
   },
   "WPFInstalldeskflow": {
@@ -11810,7 +11909,7 @@ $inputXML = @'
         MinHeight="600"
         Title="WinUtil">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="0" CornerRadius="10"/>
+        <WindowChrome CaptionHeight="0" CornerRadius="10" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
     <Window.Resources>
     <Style TargetType="ToolTip">
@@ -13123,6 +13222,7 @@ $inputXML = @'
                         <Button Name="WPFSearchChipBrowsers"        Content="Browsers"          Style="{StaticResource FilterChipStyle}"/>
                         <Button Name="WPFSearchChipCommunications"  Content="Communications"    Style="{StaticResource FilterChipStyle}"/>
                         <Button Name="WPFSearchChipDevelopment"     Content="Development"       Style="{StaticResource FilterChipStyle}"/>
+                        <Button Name="WPFSearchChipDocument"        Content="Document"          Style="{StaticResource FilterChipStyle}"/>
                         <Button Name="WPFSearchChipGames"           Content="Games"             Style="{StaticResource FilterChipStyle}"/>
                         <Button Name="WPFSearchChipMicrosoftTools"  Content="Microsoft Tools"   Style="{StaticResource FilterChipStyle}"/>
                         <Button Name="WPFSearchChipMultimediaTools" Content="Multimedia Tools"  Style="{StaticResource FilterChipStyle}"/>
@@ -14484,10 +14584,10 @@ $sync["Form"].Add_MouseDoubleClick({
     if ($_.OriginalSource.Name -eq "NavDockPanel" -or
         $_.OriginalSource.Name -eq "GridBesideNavDockPanel") {
             if ($sync["Form"].WindowState -eq [Windows.WindowState]::Normal) {
-                $sync["Form"].WindowState = [Windows.WindowState]::Maximized
+                [Windows.SystemCommands]::MaximizeWindow($sync.Form)
             }
             else{
-                $sync["Form"].WindowState = [Windows.WindowState]::Normal
+                [Windows.SystemCommands]::RestoreWindow($sync.Form)
             }
     }
 })
@@ -14600,6 +14700,7 @@ $sync["WPFSearchChipAll"].Add_Click({ Set-WinUtilAppCategoryFilter })
 $sync["WPFSearchChipBrowsers"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Browsers" })
 $sync["WPFSearchChipCommunications"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Communications" })
 $sync["WPFSearchChipDevelopment"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Development" })
+$sync["WPFSearchChipDocument"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Document" })
 $sync["WPFSearchChipGames"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Games" })
 $sync["WPFSearchChipMicrosoftTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Microsoft Tools" })
 $sync["WPFSearchChipMultimediaTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Multimedia Tools" })
@@ -14748,8 +14849,32 @@ $sync["WPFWin11ISOCleanResetButton"].Add_Click({
     Invoke-WinUtilISOCleanAndReset
 })
 
+function Remove-WinUtilTempScript {
+    <#
+    .SYNOPSIS
+        Removes the temporary script downloaded by windev.ps1.
+
+    .DESCRIPTION
+        Deletes the current script only when it is a winutil-*.ps1 file in
+        the system temporary directory. This preserves normal file-backed
+        and in-memory WinUtil launches.
+    #>
+
+    $scriptPath = $PSCommandPath
+    $tempPath = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+
+    if (
+        $scriptPath -and
+        [IO.Path]::GetDirectoryName($scriptPath) -eq $tempPath -and
+        [IO.Path]::GetFileName($scriptPath) -like 'winutil-*.ps1'
+    ) {
+        Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 $sync["Form"].ShowDialog() | out-null
+Remove-WinUtilTempScript
 Stop-Transcript
 
