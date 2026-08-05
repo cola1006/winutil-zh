@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.08.04
+    Version        : 26.08.05
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.08.04"
+$sync.version = "26.08.05"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -3295,6 +3295,7 @@ function Invoke-WinUtilISOWriteUSB {
                 $wimSizeMB = [math]::Round((Get-Item $installWim).Length / 1MB)
                 if ($wimSizeMB -gt 3800) {
                     Log "install.wim is $wimSizeMB MB - splitting for FAT32 compatibility... This will take several minutes."
+                    Set-ItemProperty -LiteralPath $installWim -Name IsReadOnly -Value $false
                     $splitDest = Join-Path $usbDrive "sources\install.swm"
                     New-Item -ItemType Directory -Path (Split-Path $splitDest) -Force
                     Split-WindowsImage -ImagePath $installWim -SplitImagePath $splitDest -FileSize 3800 -CheckIntegrity
@@ -8840,6 +8841,15 @@ $sync.configs.applications = @'
     "description": "TEAMSPEAK。你的團隊。你的規則。以清晰無比的音質跨平台與隊友溝通，具備軍規級安全性、無延遲的效能，以及無與倫比的可靠度與運作時間。",
     "link": "https://www.teamspeak.com/",
     "winget": "TeamSpeakSystems.TeamSpeakClient",
+    "foss": false
+  },
+  "WPFInstallteamspeak6": {
+    "category": "通訊",
+    "choco": "na",
+    "content": "TeamSpeak 6",
+    "description": "TEAMSPEAK。你的團隊。你的規則。以清晰無比的音質跨平台與隊友溝通，具備軍規級安全性、無延遲的效能，以及無與倫比的可靠度與運作時間。",
+    "link": "https://www.teamspeak.com/",
+    "winget": "TeamSpeakSystems.TeamSpeakClient.Beta.6",
     "foss": false
   },
   "WPFInstalltelegram": {
