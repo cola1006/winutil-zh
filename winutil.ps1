@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.08.05
+    Version        : 26.08.07
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.08.05"
+$sync.version = "26.08.07"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -857,8 +857,9 @@ function Initialize-InstallAppEntry {
         $border.Tag = $appKey
         $border.ToolTip = $app.description
         $border.Add_MouseLeftButtonUp({
-            $childCheckbox = ($this.Child | Where-Object {$_.Template.TargetType -eq [System.Windows.Controls.Checkbox]})[0]
-            $childCheckBox.isChecked = -not $childCheckbox.IsChecked
+            # Resolve through $sync because the border's child is a layout Grid for FOSS entries
+            $childCheckbox = $sync.$($this.Tag)
+            $childCheckbox.IsChecked = -not $childCheckbox.IsChecked
         })
         $border.Add_MouseEnter({
             if (($sync.$($this.Tag).IsChecked) -eq $false) {
@@ -884,15 +885,16 @@ function Initialize-InstallAppEntry {
         # Store the original appKey in Tag
         $checkBox.Tag = $appKey
         $checkbox.Style = $sync.Form.Resources.AppEntryCheckboxStyle
+        # The checkbox sits inside the entry layout Grid, so the border is one level further up
         $checkbox.Add_Checked({
-            Invoke-WPFSelectedCheckboxesUpdate -type "Add" -checkboxName $this.Parent.Tag
-            $borderElement = $this.Parent
+            Invoke-WPFSelectedCheckboxesUpdate -type "Add" -checkboxName $this.Tag
+            $borderElement = $this.Parent.Parent
             $borderElement.SetResourceReference([Windows.Controls.Control]::BackgroundProperty, "AppInstallSelectedColor")
         })
 
         $checkbox.Add_Unchecked({
-            Invoke-WPFSelectedCheckboxesUpdate -type "Remove" -checkboxName $this.Parent.Tag
-            $borderElement = $this.Parent
+            Invoke-WPFSelectedCheckboxesUpdate -type "Remove" -checkboxName $this.Tag
+            $borderElement = $this.Parent.Parent
             $borderElement.SetResourceReference([Windows.Controls.Control]::BackgroundProperty, "AppInstallUnselectedColor")
         })
 
@@ -924,15 +926,6 @@ function Initialize-InstallAppEntry {
         $appName = New-Object Windows.Controls.TextBlock
         $appName.Style = $sync.Form.Resources.AppEntryNameStyle
         $appName.Text = $app.content
-
-        # Add FOSS label after the name if FOSS
-        if ($app.foss -eq $true) {
-            $fossRun = [System.Windows.Documents.Run]::new(" $([char]0x25CF)")
-            $fossRun.Foreground = [Windows.Media.SolidColorBrush]::new([Windows.Media.Color]::FromRgb(110, 255, 114))
-            $fossRun.FontSize = 11.5
-
-            [void]$appName.Inlines.Add($fossRun)
-        }
         [void]$contentPanel.Children.Add($appName)
         $checkBox.Content = $contentPanel
 
@@ -940,7 +933,20 @@ function Initialize-InstallAppEntry {
         $checkBox.SetValue([Windows.Automation.AutomationProperties]::NameProperty, $app.content)
         $border.SetValue([Windows.Automation.AutomationProperties]::NameProperty, $app.content)
 
-        $border.Child = $checkBox
+        # Keep the same layout for every entry so the checkbox handlers can reach the border
+        $entryLayout = New-Object Windows.Controls.Grid
+        [void]$entryLayout.Children.Add($checkBox)
+
+        # Mark FOSS apps with a corner badge, bled into the border padding so it sits on the edge
+        if ($app.foss -eq $true) {
+            $fossBadge = New-WinUtilFossBadge
+            $fossBadge.HorizontalAlignment = "Right"
+            $fossBadge.VerticalAlignment = "Top"
+            $fossBadge.Margin = New-Object Windows.Thickness(0, -4, -6, 0)
+
+            [void]$entryLayout.Children.Add($fossBadge)
+        }
+        $border.Child = $entryLayout
         if ($sync.selectedApps -contains $appKey) {
             $checkBox.IsChecked = $true
         }
@@ -3714,6 +3720,60 @@ function Invoke-WinUtilUninstallPSProfile {
     }
 
     Write-Host "Successfully uninstalled CTT PowerShell Profile." -ForegroundColor Green
+}
+
+function New-WinUtilFossBadge {
+    <#
+        .SYNOPSIS
+            Creates the FOSS marker: the open source keyhole on a green backdrop
+        .DESCRIPTION
+            Returns a fresh element on every call, because a WPF element can only have one parent.
+            The artwork is authored in a 22x22 box and scaled by the Viewbox, so callers only pick a size.
+        .PARAMETER Size
+            Edge length of the badge in pixels
+        .PARAMETER Round
+            Use a full circle instead of the corner triangle, for the legend rather than an app entry
+    #>
+    param(
+        [double]$Size = 24,
+        [switch]$Round
+    )
+
+    $artwork = New-Object Windows.Controls.Grid
+    $artwork.Width = 22
+    $artwork.Height = 22
+
+    $backdrop = New-Object Windows.Shapes.Path
+    $backdrop.Fill = [Windows.Media.SolidColorBrush]::new([Windows.Media.Color]::FromRgb(19, 143, 83))
+    $keyhole = New-Object Windows.Shapes.Path
+    $keyhole.Stroke = [Windows.Media.SolidColorBrush]::new([Windows.Media.Color]::FromRgb(247, 247, 247))
+
+    if ($Round) {
+        $backdrop.Data = [Windows.Media.EllipseGeometry]::new([Windows.Point]::new(11, 11), 11, 11)
+        # Keyhole centred in the circle, which has room for a larger ring than the triangle does
+        $keyhole.Data = [Windows.Media.Geometry]::Parse("M 7.673,15.751 A 5.8,5.8 0 1 1 14.327,15.751")
+        $keyhole.StrokeThickness = 3.4
+    } else {
+        # Triangle filling the top right corner, its outer corner rounded to match AppEntryBorderStyle
+        $backdrop.Data = [Windows.Media.Geometry]::Parse("M 0,0 L 17,0 A 5,5 0 0 1 22,5 L 22,22 Z")
+        # Keyhole centred on the triangle's incentre (15.56, 6.44) so it keeps the same
+        # 1.8 clearance from all three edges
+        $keyhole.Data = [Windows.Media.Geometry]::Parse("M 13.61,9.225 A 3.4,3.4 0 1 1 17.51,9.225")
+        $keyhole.StrokeThickness = 2.4
+    }
+
+    $keyhole.StrokeStartLineCap = [Windows.Media.PenLineCap]::Round
+    $keyhole.StrokeEndLineCap = [Windows.Media.PenLineCap]::Round
+    [void]$artwork.Children.Add($backdrop)
+    [void]$artwork.Children.Add($keyhole)
+
+    $badge = New-Object Windows.Controls.Viewbox
+    $badge.Width = $Size
+    $badge.Height = $Size
+    $badge.Child = $artwork
+    $badge.ToolTip = "Free and Open Source Software"
+
+    return $badge
 }
 
 function Remove-WinUtilAPPX {
@@ -6581,11 +6641,12 @@ function Invoke-WPFUIElements {
             $itemsControl.Items.Add($label) | Out-Null
             $sync[$category] = $label
 
-            # Sort entries by type (checkboxes first, then buttons, then comboboxes) and then alphabetically by Content
+            # Sort entries by type (checkboxes first, then buttons, then comboboxes, notes last) and then alphabetically by Content
             $entries = $organizedData[$panelKey][$category] | Sort-Object @{Expression = {
                 switch ($_.Type) {
                     'Button' { 1 }
                     'Combobox' { 2 }
+                    'Note' { 3 }
                     default { 0 }
                 }
             }}, Content
@@ -6802,17 +6863,15 @@ function Invoke-WPFUIElements {
                         $textBlock.Margin = "5,5,5,5"
                         $textBlock.UseLayoutRounding = $true
 
-                        $bulletRun = New-Object Windows.Documents.Run
-                        $bulletRun.Text = [char]0x25CF
-                        $bulletRun.Foreground = [Windows.Media.SolidColorBrush]::new([Windows.Media.Color]::FromRgb(110, 255, 114))
-                        $bulletRun.FontSize = 11.5
+                        $bulletBadge = [Windows.Documents.InlineUIContainer]::new((New-WinUtilFossBadge -Size 18 -Round))
+                        $bulletBadge.BaselineAlignment = [Windows.BaselineAlignment]::Center
 
                         $textRun = New-Object Windows.Documents.Run
                         $textRun.Text = " $($entryInfo.Content)"
                         $textRun.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "FontSize")
                         $textRun.Foreground = [Windows.Media.SolidColorBrush]::new([Windows.Media.Color]::FromRgb(19, 143, 83))
 
-                        $textBlock.Inlines.Add($bulletRun)
+                        $textBlock.Inlines.Add($bulletBadge)
                         $textBlock.Inlines.Add($textRun)
 
                         $itemsControl.Items.Add($textBlock) | Out-Null
