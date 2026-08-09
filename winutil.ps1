@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.08.08
+    Version        : 26.08.09
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.08.08"
+$sync.version = "26.08.09"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -154,21 +154,26 @@ function Close-WinUtilRunspacePool {
 function Find-AppsByNameOrDescription {
     <#
         .SYNOPSIS
-            Searches through the Apps on the Install Tab and hides all entries that do not match the string
+            Filters the Install tab entries by search text and by category
 
         .DESCRIPTION
-            Filters application entries by name or description using literal string matching.
-            Respects collapsed category state and handles null $sync gracefully.
+            Search text and categories are independent filters that both have to pass. An entry is
+            shown when its name or description matches the search text, and when its category is in
+            the selected set. An empty search matches everything, and an empty category set matches
+            every category.
+
+            While either filter is active the matching categories are expanded, since a collapsed
+            category would otherwise hide the very results that were asked for. With no filter at
+            all the collapsed state the user set is restored.
 
         .PARAMETER SearchString
-            The string to be searched for. Wildcards are treated as literal characters.
+            The string to search for. Wildcards are treated as literal characters.
 
-        .PARAMETER Category
-            When provided, only applications in this exact category are shown.
+        .PARAMETER Categories
+            The categories to show. An empty or missing array shows all of them.
 
         .NOTES
             - Uses module-scope $sync (no parameter needed; inherits from caller's scope)
-            - Performs literal matching (no wildcard expansion)
             - Safely handles missing hashtable keys and null UI elements
             - Protected by try/catch to prevent UI thread crashes
     #>
@@ -177,7 +182,7 @@ function Find-AppsByNameOrDescription {
         [string]$SearchString = "",
 
         [Parameter(Mandatory = $false)]
-        [string]$Category = ""
+        [string[]]$Categories = @()
     )
 
     # Validate that $sync exists and has required structure
@@ -196,21 +201,34 @@ function Find-AppsByNameOrDescription {
         return
     }
 
+    # Categories that filtering expanded on the user's behalf, so clearing the filter can undo it
+    if ($null -eq $sync.AppCategoryAutoExpanded) {
+        $sync.AppCategoryAutoExpanded = @{}
+    }
+
     try {
-        # Reset the visibility if the search string is empty or the search is cleared
-        if ([string]::IsNullOrWhiteSpace($SearchString) -and [string]::IsNullOrWhiteSpace($Category)) {
+        $activeCategories = @($Categories | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $hasSearch = -not [string]::IsNullOrWhiteSpace($SearchString)
+        $hasCategories = $activeCategories.Count -gt 0
+
+        # Nothing is filtered, so put every entry back and leave the collapsed categories collapsed
+        if (-not $hasSearch -and -not $hasCategories) {
             $sync.ItemsControl.Items | ForEach-Object {
-                # Each item is a StackPanel container
                 $_.Visibility = [Windows.Visibility]::Visible
 
                 if ($_.Children.Count -ge 2) {
                     $categoryLabel = $_.Children[0]
                     $wrapPanel = $_.Children[1]
 
-                    # Keep category label visible
                     $categoryLabel.Visibility = [Windows.Visibility]::Visible
 
-                    # Respect the collapsed state of categories (indicated by + prefix)
+                    # A category that filtering expanded goes back to how the user left it
+                    $categoryName = $categoryLabel.Content -replace '^[+-] ', ''
+                    if ($sync.AppCategoryAutoExpanded.ContainsKey($categoryName)) {
+                        $categoryLabel.Content = $categoryLabel.Content -replace "^- ", "+ "
+                        $sync.AppCategoryAutoExpanded.Remove($categoryName)
+                    }
+
                     if ($categoryLabel.Content -like "+*") {
                         $wrapPanel.Visibility = [Windows.Visibility]::Collapsed
                     }
@@ -218,7 +236,6 @@ function Find-AppsByNameOrDescription {
                         $wrapPanel.Visibility = [Windows.Visibility]::Visible
                     }
 
-                    # Show all apps within the category
                     $wrapPanel.Children | ForEach-Object {
                         $_.Visibility = [Windows.Visibility]::Visible
                     }
@@ -230,7 +247,6 @@ function Find-AppsByNameOrDescription {
         # Escape wildcard characters for literal matching
         $escapedSearchString = [System.Management.Automation.WildcardPattern]::Escape($SearchString)
 
-        # Perform search
         $sync.ItemsControl.Items | ForEach-Object {
             # Each item is a StackPanel container with Children[0] = label, Children[1] = WrapPanel
             if ($_.Children.Count -ge 2) {
@@ -238,12 +254,9 @@ function Find-AppsByNameOrDescription {
                 $wrapPanel = $_.Children[1]
                 $categoryHasMatch = $false
 
-                # Keep category label visible
                 $categoryLabel.Visibility = [Windows.Visibility]::Visible
 
-                # Search through apps in this category
                 foreach ($appControl in $wrapPanel.Children) {
-                    # Safely retrieve app entry from hashtable
                     $appTag = $appControl.Tag
                     $appEntry = $null
 
@@ -251,14 +264,13 @@ function Find-AppsByNameOrDescription {
                         $appEntry = $sync.configs.applicationsHashtable[$appTag]
                     }
 
-                    # Check if app matches search criteria
                     if ($null -ne $appEntry) {
-                        $categoryMatch = -not [string]::IsNullOrWhiteSpace($Category) -and $appEntry.Category -eq $Category
-                        $contentMatch = [string]::IsNullOrWhiteSpace($Category) -and $appEntry.Content -like "*$escapedSearchString*"
-                        $descriptionMatch = [string]::IsNullOrWhiteSpace($Category) -and $appEntry.Description -like "*$escapedSearchString*"
+                        $categoryMatch = -not $hasCategories -or $activeCategories -contains $appEntry.Category
+                        $textMatch = -not $hasSearch -or
+                            $appEntry.Content -like "*$escapedSearchString*" -or
+                            $appEntry.Description -like "*$escapedSearchString*"
 
-                        if ($categoryMatch -or $contentMatch -or $descriptionMatch) {
-                            # Show the App and mark that this category has a match
+                        if ($categoryMatch -and $textMatch) {
                             $appControl.Visibility = [Windows.Visibility]::Visible
                             $categoryHasMatch = $true
                         }
@@ -272,17 +284,17 @@ function Find-AppsByNameOrDescription {
                     }
                 }
 
-                # If category has matches, show the WrapPanel and update the category label to expanded state
                 if ($categoryHasMatch) {
                     $wrapPanel.Visibility = [Windows.Visibility]::Visible
                     $_.Visibility = [Windows.Visibility]::Visible
-                    # Update category label to show expanded state (-)
+                    # Expand it, otherwise the matches stay hidden behind a collapsed header.
+                    # Remember that it was collapsed so clearing the filter can put it back.
                     if ($categoryLabel.Content -like "+*") {
                         $categoryLabel.Content = $categoryLabel.Content -replace "^\+ ", "- "
+                        $sync.AppCategoryAutoExpanded[($categoryLabel.Content -replace '^- ', '')] = $true
                     }
                 }
                 else {
-                    # Hide the entire category container if no matches
                     $_.Visibility = [Windows.Visibility]::Collapsed
                 }
             }
@@ -1019,6 +1031,11 @@ function Initialize-InstallCategoryAppList {
                     # The WrapPanel is the second child
                     $wrapPanel = $categoryContainer.Children[1]
 
+                    # An explicit click wins over anything filtering expanded automatically
+                    if ($sync.AppCategoryAutoExpanded) {
+                        $sync.AppCategoryAutoExpanded.Remove(($categoryToggle.Content -replace '^[+-] ', ''))
+                    }
+
                     # Toggle visibility
                     if ($wrapPanel.Visibility -eq [Windows.Visibility]::Visible) {
                         $wrapPanel.Visibility = [Windows.Visibility]::Collapsed
@@ -1135,6 +1152,9 @@ function Initialize-WinUtilTabContent {
     }
 
     $sync.InitializedTabs[$TabName] = $true
+
+    # Sync freshly built controls to any selections already in $sync.selected* (import/preset).
+    Reset-WPFCheckBoxes -doToggles $true
 }
 
 function Initialize-WinUtilTaskbarOverlayAssets {
@@ -1316,6 +1336,27 @@ function Install-WinUtilWinget {
     Install-PackageProvider -Name NuGet -Force
     Install-Module -Name Microsoft.WinGet.Client -Force
     Repair-WinGetPackageManager -AllUsers
+}
+
+function Invoke-WinUtilAppCategoryChip {
+    <#
+        .SYNOPSIS
+            Handles a click on an Install tab category chip
+
+        .DESCRIPTION
+            The chip carries its category in Tag, so every chip shares this handler. Holding ctrl
+            adds the category to the current selection instead of replacing it.
+
+        .PARAMETER Chip
+            The chip that was clicked
+    #>
+    param(
+        [Parameter(Mandatory)]
+        $Chip
+    )
+
+    $ctrlDown = [bool]([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)
+    Set-WinUtilAppCategoryFilter -Category $Chip.Tag -Additive:$ctrlDown
 }
 
 function Invoke-WinUtilAssets {
@@ -3430,37 +3471,67 @@ function Invoke-WinUtilSSHServer {
         Write-Host "Firewall rule for OpenSSH Server created and enabled."
     }
 
-    # Check for the authorized_keys file
-    $sshFolderPath = "$Home\.ssh"
-    $authorizedKeysPath = "$sshFolderPath\authorized_keys"
+    # An SSH logon for a member of the administrators group gets a full token
+    # with no UAC prompt, so sshd reads administrator keys from a machine-wide
+    # file that only Administrators and SYSTEM may write. WinUtil always runs
+    # elevated, so the account being set up here is always an administrator.
+    $sshProgramDataPath = Join-Path $env:ProgramData "ssh"
+    $sshdConfigPath = Join-Path $sshProgramDataPath "sshd_config"
+    $authorizedKeysPath = Join-Path $sshProgramDataPath "administrators_authorized_keys"
+    $profileKeysPath = Join-Path $env:USERPROFILE ".ssh\authorized_keys"
 
-    if (-not (Test-Path -Path $sshFolderPath)) {
-        Write-Host "Creating ssh directory..."
-        New-Item -Path $sshFolderPath -ItemType Directory -Force
+    if (-not (Test-Path -Path $sshProgramDataPath)) {
+        New-Item -Path $sshProgramDataPath -ItemType Directory -Force | Out-Null
     }
+
+    # Earlier WinUtil versions commented out the administrators block in
+    # sshd_config. Detect that state before restoring it, so administrator keys
+    # already in use are carried over instead of silently stopping working.
+    $configContent = if (Test-Path -Path $sshdConfigPath) { [string](Get-Content -Path $sshdConfigPath -Raw) } else { "" }
+    $restoredContent = $configContent -replace '(?m)^# (Match Group administrators)$', '$1'
+    $restoredContent = $restoredContent -replace '(?m)^# (\s+AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys)$', '$1'
+    $configWasOverridden = $restoredContent -ne $configContent
 
     if (-not (Test-Path -Path $authorizedKeysPath)) {
-        Write-Host "Creating authorized_keys file..."
-        New-Item -Path $authorizedKeysPath -ItemType File -Force
-        Write-Host "authorized_keys file created at $authorizedKeysPath."
+        Write-Host "Creating administrators_authorized_keys file..."
+        New-Item -Path $authorizedKeysPath -ItemType File -Force | Out-Null
+        Write-Host "administrators_authorized_keys file created at $authorizedKeysPath."
     }
 
-    Write-Host "Configuring sshd_config for standard authorized_keys behavior..."
-    $sshdConfigPath = "C:\ProgramData\ssh\sshd_config"
+    if ($configWasOverridden -and (Test-Path -Path $profileKeysPath)) {
+        $currentKeys = @(Get-Content -Path $authorizedKeysPath)
+        $keysToMove = @(Get-Content -Path $profileKeysPath | Where-Object {
+            $_.Trim() -and -not $_.TrimStart().StartsWith("#") -and $currentKeys -notcontains $_
+        })
 
-    $configContent = Get-Content -Path $sshdConfigPath -Raw
+        if ($keysToMove.Count -gt 0) {
+            Add-Content -Path $authorizedKeysPath -Value $keysToMove
+            Write-Host "Moved $($keysToMove.Count) key(s) from $profileKeysPath to $authorizedKeysPath."
+        }
+    }
 
-    $updatedContent = $configContent -replace '(?m)^(Match Group administrators)$', '# $1'
-    $updatedContent = $updatedContent -replace '(?m)^(\s+AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys)$', '# $1'
+    # sshd ignores the file unless inheritance is off and access is limited to
+    # Administrators (S-1-5-32-544) and SYSTEM (S-1-5-18). SIDs keep this
+    # working on localized installs, where the group names differ.
+    $acl = Get-Acl -Path $authorizedKeysPath
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) {
+        [void]$acl.RemoveAccessRule($rule)
+    }
+    foreach ($sid in @("S-1-5-32-544", "S-1-5-18")) {
+        [void]$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            [System.Security.Principal.SecurityIdentifier]::new($sid), "FullControl", "Allow"))
+    }
+    Set-Acl -Path $authorizedKeysPath -AclObject $acl
 
-    if ($updatedContent -ne $configContent) {
-        Set-Content -Path $sshdConfigPath -Value $updatedContent -Force
-        Write-Host "Commented out administrator-specific SSH key configuration in sshd_config"
+    if ($configWasOverridden) {
+        Set-Content -Path $sshdConfigPath -Value $restoredContent -Force
+        Write-Host "Restored the administrator key file setting in sshd_config."
         Restart-Service -Name sshd -Force
     }
 
     Write-Host "OpenSSH server was successfully enabled."
-    Write-Host "The config file can be located at C:\ProgramData\ssh\sshd_config"
+    Write-Host "The config file can be located at $sshdConfigPath"
     Write-Host "Add your public keys to this file -> $authorizedKeysPath"
 }
 
@@ -3993,19 +4064,52 @@ function Save-WinUtilFile {
 function Set-WinUtilAppCategoryFilter {
     <#
         .SYNOPSIS
-            Applies an exact application category filter from an Install tab search chip.
+            Applies the Install tab category filter and syncs the chip states to it
+
+        .DESCRIPTION
+            The selection lives in $sync.SelectedAppCategories. An empty selection means every
+            category is shown, which is what the All chip represents. The category filter and the
+            search box are independent: this only touches categories, and the current search text
+            is reapplied on top.
 
         .PARAMETER Category
-            The application category to show. An empty value clears the filter.
+            The category to act on. An empty value clears the filter back to All.
+
+        .PARAMETER Additive
+            Toggles this category in or out of the current selection instead of replacing it.
+            Bound to ctrl click.
     #>
     param(
         [Parameter(Mandatory = $false)]
-        [string]$Category = ""
+        [string]$Category = "",
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Additive
     )
 
-    $sync.SearchBar.Tag = $Category
-    $sync.SearchBar.Text = $Category
-    Find-AppsByNameOrDescription -SearchString $Category -Category $Category
+    if ($null -eq $sync.SelectedAppCategories) {
+        $sync.SelectedAppCategories = [System.Collections.Generic.List[string]]::new()
+    }
+    $selected = $sync.SelectedAppCategories
+
+    if ([string]::IsNullOrWhiteSpace($Category)) {
+        $selected.Clear()
+    } elseif ($Additive) {
+        if ($selected.Contains($Category)) {
+            [void]$selected.Remove($Category)
+        } else {
+            $selected.Add($Category)
+        }
+    } elseif ($selected.Count -eq 1 -and $selected.Contains($Category)) {
+        # Clicking the only active category again clears the filter
+        $selected.Clear()
+    } else {
+        $selected.Clear()
+        $selected.Add($Category)
+    }
+
+    Update-WinUtilAppCategoryChip
+    Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Categories $selected.ToArray()
 }
 
 function Set-WinUtilDNS {
@@ -4142,7 +4246,7 @@ function Set-WinUtilRegistry {
     )
 
     try {
-        if(!(Test-Path 'HKU:\')) {New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS}
+        if(!(Test-Path 'HKU:\')) {New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS | Out-Null}
 
         If (!(Test-Path $Path)) {
             Write-Host "$Path was not found. Creating..."
@@ -4344,6 +4448,10 @@ function Set-WinUtilTweaksProgressIndicator {
         [ValidateRange(0,100)]
         [int]$Percent
     )
+
+    if ($null -eq $sync.form -or $null -eq $sync.form.Dispatcher) {
+        return
+    }
 
     $indicatorVisible = if ($Visible) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
     $indicatorLabel = $Label
@@ -4680,8 +4788,14 @@ function Invoke-WinUtilInstallAppRenderBatch {
         $sync.$appKey = Initialize-InstallAppEntry -TargetElement $CategoryBatch.TargetElement -AppKey $appKey
     }
 
-    if ($sync.currentTab -eq "Install" -and $sync.SearchBar -and -not [string]::IsNullOrWhiteSpace($sync.SearchBar.Text)) {
-        Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Category $sync.SearchBar.Tag
+    # Entries render in batches, so a filter that is already active has to be applied to each new
+    # batch. Categories count as an active filter just like search text does.
+    if ($sync.currentTab -eq "Install" -and $sync.SearchBar) {
+        $selectedCategories = if ($sync.SelectedAppCategories) { $sync.SelectedAppCategories.ToArray() } else { @() }
+
+        if (-not [string]::IsNullOrWhiteSpace($sync.SearchBar.Text) -or $selectedCategories.Count -gt 0) {
+            Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Categories $selectedCategories
+        }
     }
 }
 
@@ -4777,6 +4891,26 @@ function Test-WinUtilPackageManager {
     }
 
     return $status
+}
+
+function Update-WinUtilAppCategoryChip {
+    <#
+        .SYNOPSIS
+            Pushes the current category selection onto the Install tab filter chips
+
+        .DESCRIPTION
+            The chips are toggle buttons, so their checked state has to follow the selection
+            rather than whatever the last click did to them. The All chip is checked when no
+            category is selected.
+    #>
+    $selected = $sync.SelectedAppCategories
+    if ($null -eq $selected) { return }
+
+    foreach ($chip in $sync.AppCategoryChips) {
+        $control = $sync[$chip.Name]
+        if ($null -eq $control) { continue }
+        $control.IsChecked = if ($chip.Category) { $selected.Contains($chip.Category) } else { $selected.Count -eq 0 }
+    }
 }
 
 function Update-WinUtilSelections ($flatJson) {
@@ -5205,7 +5339,7 @@ function Invoke-WPFAppxRemoval {
             $sync.ProcessRunning = $false
         }
 
-    }
+    } | Out-Null
 }
 
 function Invoke-WPFButton {
@@ -5345,7 +5479,7 @@ function Invoke-WPFFeatureInstall {
         Write-Host "---   Features are Installed    ---"
         Write-Host "---  A Reboot may be required   ---"
         Write-Host "==================================="
-    }
+    } | Out-Null
 }
 
 function Invoke-WPFFixesNetwork {
@@ -5935,7 +6069,7 @@ function Invoke-WPFInstall {
             }
             $sync.ProcessRunning = $False
         }
-    }
+    } | Out-Null
 }
 
 function Invoke-WPFInstallUpgrade {
@@ -6322,8 +6456,9 @@ function Invoke-WPFTab {
 
     # Always reset the filter for the current tab
     if ($sync.currentTab -eq "Install") {
-        # Reset Install tab filter
-        Find-AppsByNameOrDescription -SearchString ""
+        # Reset the search text, but keep the categories the chips are still showing as selected
+        $selectedCategories = if ($sync.SelectedAppCategories) { $sync.SelectedAppCategories.ToArray() } else { @() }
+        Find-AppsByNameOrDescription -SearchString "" -Categories $selectedCategories
     } elseif ($sync.currentTab -eq "Tweaks") {
         # Reset Tweaks tab filter
         Find-TweaksByNameOrDescription -SearchString ""
@@ -6493,7 +6628,7 @@ function Invoke-WPFtweaksbutton {
     Write-Host "--     Tweaks are Finished    ---"
     Write-Host "================================="
     Write-WinUtilLog -Component "Tweaks" -Message "Tweaks workflow completed."
-  }
+  } | Out-Null
 }
 
 function Invoke-WPFUIElements {
@@ -6954,6 +7089,10 @@ function Invoke-WPFUIElements {
 }
 
 function Invoke-WPFUIThread ($ScriptBlock) {
+    if ($null -eq $sync.form -or $null -eq $sync.form.Dispatcher) {
+        return
+    }
+
     $sync.form.Dispatcher.Invoke([action]$ScriptBlock)
 }
 
@@ -7517,6 +7656,15 @@ $sync.configs.applications = @'
     "winget": "Brave.Brave",
     "foss": true
   },
+  "WPFInstallbruno": {
+    "category": "開發",
+    "choco": "bruno",
+    "content": "Bruno",
+    "description": "Bruno is a local-first API client that stores collections as plain text files for version control and collaboration.",
+    "link": "https://www.usebruno.com/",
+    "winget": "Bruno.Bruno",
+    "foss": true
+  },
   "WPFInstallbulkcrapuninstaller": {
     "category": "工具程式",
     "choco": "bulk-crap-uninstaller",
@@ -7715,6 +7863,15 @@ $sync.configs.applications = @'
     "winget": "SpikeHD.Dorion",
     "foss": true
   },
+  "WPFInstalldockerdesktop": {
+    "category": "開發",
+    "choco": "docker-desktop",
+    "content": "Docker Desktop",
+    "description": "Docker Desktop provides a local environment for building, running, and testing containerized applications on Windows.",
+    "link": "https://www.docker.com/products/docker-desktop/",
+    "winget": "Docker.DockerDesktop",
+    "foss": false
+  },
   "WPFInstalldotnet6": {
     "category": "Microsoft 工具",
     "choco": "dotnet-6.0-runtime",
@@ -7850,6 +8007,24 @@ $sync.configs.applications = @'
     "winget": "flux.flux",
     "foss": false
   },
+  "WPFInstallfoobar": {
+    "category": "多媒體工具",
+    "choco": "foobar2000",
+    "content": "foobar2000 (Music Player)",
+    "description": "foobar2000 is a highly customizable and extensible music player for Windows, known for its modular design and advanced features.",
+    "link": "https://www.foobar2000.org/",
+    "winget": "PeterPawlowski.foobar2000",
+    "foss": false
+  },
+  "WPFInstallfnm": {
+    "category": "開發",
+    "choco": "fnm",
+    "content": "Fast Node Manager",
+    "description": "Fast Node Manager (fnm) is a fast, cross-platform tool for installing and switching between Node.js versions.",
+    "link": "https://github.com/Schniz/fnm",
+    "winget": "Schniz.fnm",
+    "foss": true
+  },
   "WPFInstallfoxpdfreader": {
     "category": "Document",
     "choco": "foxitreader",
@@ -7884,6 +8059,24 @@ $sync.configs.applications = @'
     "description": "Git 是一套分散式版本控制系統，廣泛用於在軟體開發過程中追蹤原始碼的變更。",
     "link": "https://git-scm.com/",
     "winget": "Git.Git",
+    "foss": true
+  },
+  "WPFInstallgitextensions": {
+    "category": "開發",
+    "choco": "gitextensions",
+    "content": "Git Extensions",
+    "description": "Git Extensions is a graphical Git client for Windows with repository, history, and commit management tools.",
+    "link": "https://gitextensions.github.io/",
+    "winget": "GitExtensionsTeam.GitExtensions",
+    "foss": true
+  },
+  "WPFInstallgithubcli": {
+    "category": "開發",
+    "choco": "gh",
+    "content": "GitHub CLI",
+    "description": "GitHub CLI brings pull requests, issues, releases, and other GitHub workflows to the terminal.",
+    "link": "https://cli.github.com/",
+    "winget": "GitHub.cli",
     "foss": true
   },
   "WPFInstallgithubdesktop": {
@@ -8181,6 +8374,14 @@ $sync.configs.applications = @'
     "description": "Media Player Classic Qute Theater",
     "link": "https://github.com/mpc-qt/mpc-qt",
     "winget": "mpc-qt.mpc-qt",
+    "foss": true
+  },
+  "WPFInstallmpv": {
+    "category": "多媒體工具",
+    "content": "mpv",
+    "description": "mpv is a free, open source, and cross-platform media player supporting a wide variety of media formats, codecs, and subtitle types.",
+    "link": "https://mpv.io/",
+    "winget": "shinchiro.mpv",
     "foss": true
   },
   "WPFInstallmatrix": {
@@ -8578,6 +8779,15 @@ $sync.configs.applications = @'
     "winget": "JanDeDobbeleer.OhMyPosh",
     "foss": true
   },
+  "WPFInstallpostman": {
+    "category": "開發",
+    "choco": "postman",
+    "content": "Postman",
+    "description": "Postman is an API platform and desktop client for designing, testing, documenting, and collaborating on APIs.",
+    "link": "https://www.postman.com/downloads/",
+    "winget": "Postman.Postman",
+    "foss": false
+  },
   "WPFInstallpowershell": {
     "category": "Microsoft 工具",
     "choco": "powershell-core",
@@ -8830,6 +9040,15 @@ $sync.configs.applications = @'
     "winget": "StartIsBack.StartAllBack",
     "foss": false
   },
+  "WPFInstallstarship": {
+    "category": "開發",
+    "choco": "starship",
+    "content": "Starship (Shell Prompt)",
+    "description": "Starship is a fast, customizable, cross-platform prompt for PowerShell and other shells.",
+    "link": "https://starship.rs/",
+    "winget": "Starship.Starship",
+    "foss": true
+  },
   "WPFInstallsteam": {
     "category": "遊戲",
     "choco": "steam-client",
@@ -8837,6 +9056,15 @@ $sync.configs.applications = @'
     "description": "Steam 是購買與遊玩電子遊戲的數位發行平台，提供多人遊戲、影片串流等功能。",
     "link": "https://store.steampowered.com/about/",
     "winget": "Valve.Steam",
+    "foss": false
+  },
+  "WPFInstallroblox": {
+    "category": "遊戲",
+    "choco": "na",
+    "content": "Roblox",
+    "description": "Roblox is a platform and game creation system that allows users to create and play games developed by the community.",
+    "link": "https://www.roblox.com/",
+    "winget": "Roblox.Roblox",
     "foss": false
   },
   "WPFInstallsublimetext": {
@@ -9008,6 +9236,15 @@ $sync.configs.applications = @'
     "description": "Unity 是強大的遊戲開發平台，可用於製作 2D、3D、擴增實境與虛擬實境遊戲。",
     "link": "https://unity.com/",
     "winget": "Unity.UnityHub",
+    "foss": false
+  },
+  "WPFInstallvagrant": {
+    "category": "開發",
+    "choco": "vagrant",
+    "content": "Vagrant",
+    "description": "Vagrant builds and manages reproducible virtual machine development environments from declarative configuration.",
+    "link": "https://developer.hashicorp.com/vagrant",
+    "winget": "Hashicorp.Vagrant",
     "foss": false
   },
   "WPFInstalleverything": {
@@ -12962,6 +13199,44 @@ $inputXML = @'
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Category filter chips. A toggle rather than a button, so the active filter is visible
+             on the chip itself instead of only in the results below. -->
+        <Style x:Key="FilterChipToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="Padding" Value="12,4,12,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="{DynamicResource ButtonFontSize}"/>
+            <Setter Property="FontFamily" Value="{DynamicResource ButtonFontFamily}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ButtonForegroundColor}"/>
+            <Setter Property="Background" Value="{DynamicResource ButtonBackgroundColor}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Name="ChipBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{DynamicResource BorderColor}"
+                                BorderThickness="1"
+                                CornerRadius="{DynamicResource ButtonCornerRadius}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"
+                                              TextBlock.FontSize="{TemplateBinding FontSize}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ChipBorder" Property="Background" Value="{DynamicResource ButtonBackgroundMouseoverColor}"/>
+                            </Trigger>
+                            <!-- Only colours change on check. Anything affecting text width, bold for
+                                 instance, would resize the chip and shift every chip after it. -->
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ChipBorder" Property="Background" Value="{DynamicResource ButtonBackgroundSelectedColor}"/>
+                                <Setter TargetName="ChipBorder" Property="BorderBrush" Value="{DynamicResource LabelboxForegroundColor}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
     <Grid Background="{DynamicResource MainBackgroundColor}" ShowGridLines="False" Name="WPFMainGrid" Width="Auto" Height="Auto" HorizontalAlignment="Stretch">
         <Grid.RowDefinitions>
@@ -13278,26 +13553,27 @@ $inputXML = @'
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Quick Category Search Chips -->
+                    <!-- Category filters. Click one to filter, ctrl click to combine several. -->
                     <WrapPanel Grid.Row="0" Orientation="Horizontal" Margin="5,5,5,5" Name="WPFSearchChips">
-                        <TextBlock Text="Filters"
-                                   FontSize="{DynamicResource HeaderFontSize}"
-                                   FontFamily="{DynamicResource HeaderFontFamily}"
+                        <TextBlock Text="&#xE71C;"
+                                   FontFamily="Segoe MDL2 Assets"
+                                   FontSize="{DynamicResource IconFontSize}"
                                    Foreground="{DynamicResource LabelboxForegroundColor}"
                                    Background="Transparent"
                                    VerticalAlignment="Center"
-                                   Margin="15,0,8,0"/>
-                        <Button Name="WPFSearchChipAll"             Content="All"               Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipBrowsers"        Content="Browsers"          Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipCommunications"  Content="Communications"    Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipDevelopment"     Content="Development"       Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipDocument"        Content="Document"          Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipGames"           Content="Games"             Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipMicrosoftTools"  Content="Microsoft Tools"   Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipMultimediaTools" Content="Multimedia Tools"  Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipProTools"        Content="Pro Tools"         Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipSelfhostedTools" Content="Selfhosted Tools"  Style="{StaticResource FilterChipStyle}"/>
-                        <Button Name="WPFSearchChipUtilities"       Content="Utilities"         Style="{StaticResource FilterChipStyle}"/>
+                                   Margin="10,0,10,0"
+                                   ToolTip="Filter by category. Ctrl click to select more than one."/>
+                        <ToggleButton Name="WPFSearchChipAll"             Content="All"               Style="{StaticResource FilterChipToggleStyle}" IsChecked="True"/>
+                        <ToggleButton Name="WPFSearchChipBrowsers"        Content="Browsers"          Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipCommunications"  Content="Communications"    Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipDevelopment"     Content="Development"       Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipDocument"        Content="Document"          Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipGames"           Content="Games"             Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipMicrosoftTools"  Content="Microsoft Tools"   Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipMultimediaTools" Content="Multimedia Tools"  Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipProTools"        Content="Pro Tools"         Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipSelfhostedTools" Content="Selfhosted Tools"  Style="{StaticResource FilterChipToggleStyle}"/>
+                        <ToggleButton Name="WPFSearchChipUtilities"       Content="Utilities"         Style="{StaticResource FilterChipToggleStyle}"/>
                     </WrapPanel>
 
                     <Grid Grid.Row="1" Margin="{DynamicResource TabContentMargin}">
@@ -14730,7 +15006,7 @@ $searchBarTimer.add_Tick({
     $searchBarTimer.Stop()
     switch ($sync.currentTab) {
         "Install" {
-            Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Category $sync.SearchBar.Tag
+            Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Categories $sync.SelectedAppCategories.ToArray()
         }
         "Tweaks" {
             Find-TweaksByNameOrDescription -SearchString $sync.SearchBar.Text
@@ -14741,10 +15017,6 @@ $searchBarTimer.add_Tick({
     }
 })
 $sync["SearchBar"].Add_TextChanged({
-    if ($sync.SearchBar.Tag -ne $sync.SearchBar.Text) {
-        $sync.SearchBar.Tag = $null
-    }
-
     if ($sync.SearchBar.Text -ne "") {
         $sync.SearchBarClearButton.Visibility = "Visible"
         $sync.SearchBarIcon.Visibility = "Collapsed"
@@ -14753,29 +15025,43 @@ $sync["SearchBar"].Add_TextChanged({
         $sync.SearchBarIcon.Visibility = "Visible"
     }
 
-    # Category chip handlers apply their filter immediately.
-    if ($sync.SearchBar.Tag -eq $sync.SearchBar.Text) {
-        return
-    }
-
     if ($searchBarTimer.IsEnabled) {
         $searchBarTimer.Stop()
     }
     $searchBarTimer.Start()
 })
 
-# Quick Category Search Chips
-$sync["WPFSearchChipAll"].Add_Click({ Set-WinUtilAppCategoryFilter })
-$sync["WPFSearchChipBrowsers"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Browsers" })
-$sync["WPFSearchChipCommunications"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Communications" })
-$sync["WPFSearchChipDevelopment"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Development" })
-$sync["WPFSearchChipDocument"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Document" })
-$sync["WPFSearchChipGames"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Games" })
-$sync["WPFSearchChipMicrosoftTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Microsoft Tools" })
-$sync["WPFSearchChipMultimediaTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Multimedia Tools" })
-$sync["WPFSearchChipProTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Pro Tools" })
-$sync["WPFSearchChipSelfhostedTools"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Selfhosted Tools" })
-$sync["WPFSearchChipUtilities"].Add_Click({ Set-WinUtilAppCategoryFilter -Category "Utilities" })
+# Category filter chips. The chip carries its category in Tag, so one handler covers all of them.
+$sync.AppCategoryChips = @(
+    @{ Name = "WPFSearchChipAll";             Category = "" }
+    @{ Name = "WPFSearchChipBrowsers";        Category = "Browsers" }
+    @{ Name = "WPFSearchChipCommunications";  Category = "Communications" }
+    @{ Name = "WPFSearchChipDevelopment";     Category = "Development" }
+    @{ Name = "WPFSearchChipDocument";        Category = "Document" }
+    @{ Name = "WPFSearchChipGames";           Category = "Games" }
+    @{ Name = "WPFSearchChipMicrosoftTools";  Category = "Microsoft Tools" }
+    @{ Name = "WPFSearchChipMultimediaTools"; Category = "Multimedia Tools" }
+    @{ Name = "WPFSearchChipProTools";        Category = "Pro Tools" }
+    @{ Name = "WPFSearchChipSelfhostedTools"; Category = "Selfhosted Tools" }
+    @{ Name = "WPFSearchChipUtilities";       Category = "Utilities" }
+)
+$sync.SelectedAppCategories = [System.Collections.Generic.List[string]]::new()
+
+foreach ($appCategoryChip in $sync.AppCategoryChips) {
+    $sync[$appCategoryChip.Name].Tag = $appCategoryChip.Category
+}
+
+$sync["WPFSearchChipAll"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipBrowsers"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipCommunications"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipDevelopment"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipDocument"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipGames"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipMicrosoftTools"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipMultimediaTools"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipProTools"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipSelfhostedTools"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
+$sync["WPFSearchChipUtilities"].Add_Click({ Invoke-WinUtilAppCategoryChip -Chip $this })
 
 $sync["Form"].Add_Loaded({
     param($e)
