@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.08.09
+    Version        : 26.08.10
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.08.09"
+$sync.version = "26.08.10"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -399,18 +399,25 @@ function Find-TweaksByNameOrDescription {
                     }
 
                     if ($dockPanel -is [Windows.Controls.DockPanel]) {
-                        $itemsControl = $null
-                        $itemsControl = $dockPanel.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] } | Select-Object -First 1
+                        $container = $dockPanel.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] -or $_ -is [Windows.Controls.StackPanel] -or $_ -is [Windows.Controls.ScrollViewer] -or $_.GetType().Name -eq "ItemsControl" } | Select-Object -First 1
 
-                        if ($null -ne $itemsControl) {
+                        if ($null -ne $container) {
+                            $targetPanel = if ($container.PSObject.Properties['Content'] -and $null -ne $container.Content) { $container.Content } else { $container }
+                            $items = $null
+                            if ($targetPanel -is [Windows.Controls.ItemsControl] -or $targetPanel.GetType().Name -eq "ItemsControl") {
+                                $items = $targetPanel.Items
+                            }
+                            else {
+                                $items = $targetPanel.Children
+                            }
                             # Show all items in the category
-                            foreach ($item in $itemsControl.Items) {
+                            foreach ($item in $items) {
                                 if ($null -ne $item) {
-                                    # Check if it's a category label (first Label in the ItemsControl)
-                                    if ($item -is [Windows.Controls.Label]) {
+                                    # Check if it's a category label (first Label in the container)
+                                    if ($item -is [Windows.Controls.Label] -or $item.GetType().Name -eq "Label") {
                                         $item.Visibility = [Windows.Visibility]::Visible
                                     }
-                                    elseif ($item -is [Windows.Controls.DockPanel] -or $item -is [Windows.Controls.StackPanel]) {
+                                    elseif ($item -is [Windows.Controls.DockPanel] -or $item -is [Windows.Controls.StackPanel] -or $item.GetType().Name -eq "DockPanel" -or $item.GetType().Name -eq "StackPanel") {
                                         # Show all checkbox containers
                                         $item.Visibility = [Windows.Visibility]::Visible
                                     }
@@ -452,16 +459,21 @@ function Find-TweaksByNameOrDescription {
                 }
 
                 if ($dockPanel -is [Windows.Controls.DockPanel]) {
-                    $itemsControl = $null
-                    $itemsControl = $dockPanel.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] } | Select-Object -First 1
+                    $container = $dockPanel.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] -or $_ -is [Windows.Controls.StackPanel] -or $_ -is [Windows.Controls.ScrollViewer] -or $_.GetType().Name -eq "ItemsControl" } | Select-Object -First 1
 
-                    if ($null -ne $itemsControl) {
+                    if ($null -ne $container) {
                         $categoryLabel = $null
 
-                        # Process all items (checkboxes, labels, panels) in the ItemsControl
-                        for ($i = 0; $i -lt $itemsControl.Items.Count; $i++) {
-                            $item = $itemsControl.Items[$i]
-
+                        $targetPanel = if ($container.PSObject.Properties['Content'] -and $null -ne $container.Content) { $container.Content } else { $container }
+                        $items = $null
+                        if ($targetPanel -is [Windows.Controls.ItemsControl] -or $targetPanel.GetType().Name -eq "ItemsControl") {
+                            $items = $targetPanel.Items
+                        }
+                        else {
+                            $items = $targetPanel.Children
+                        }
+                        # Process all items (checkboxes, labels, panels) in the container
+                        foreach ($item in $items) {
                             if ($null -eq $item) {
                                 continue
                             }
@@ -470,7 +482,7 @@ function Find-TweaksByNameOrDescription {
                             # Check if this is a category label (usually first Label)
                             # ------------------------------------------------------------
 
-                            if ($item -is [Windows.Controls.Label]) {
+                            if ($item -is [Windows.Controls.Label] -or $item.GetType().Name -eq "Label") {
                                 $categoryLabel = $item
                                 # Initially hide category label; show it only if matches found
                                 $item.Visibility = [Windows.Visibility]::Collapsed
@@ -480,13 +492,13 @@ function Find-TweaksByNameOrDescription {
                             # Check if this is a DockPanel containing a tweak checkbox
                             # ------------------------------------------------------------
 
-                            elseif ($item -is [Windows.Controls.DockPanel]) {
+                            elseif ($item -is [Windows.Controls.DockPanel] -or $item.GetType().Name -eq "DockPanel") {
                                 $checkbox = $null
                                 $label = $null
 
                                 # Safely extract checkbox and label
-                                $checkbox = $item.Children | Where-Object { $_ -is [Windows.Controls.CheckBox] } | Select-Object -First 1
-                                $label = $item.Children | Where-Object { $_ -is [Windows.Controls.Label] } | Select-Object -First 1
+                                $checkbox = $item.Children | Where-Object { $_ -is [Windows.Controls.CheckBox] -or $_.GetType().Name -eq "CheckBox" } | Select-Object -First 1
+                                $label = $item.Children | Where-Object { $_ -is [Windows.Controls.Label] -or $_.GetType().Name -eq "Label" } | Select-Object -First 1
 
                                 # Check if tweak matches search criteria
                                 $itemMatches = $false
@@ -530,9 +542,9 @@ function Find-TweaksByNameOrDescription {
                             # Check if this is a StackPanel containing a tweak checkbox
                             # ------------------------------------------------------------
 
-                            elseif ($item -is [Windows.Controls.StackPanel]) {
+                            elseif ($item -is [Windows.Controls.StackPanel] -or $item.GetType().Name -eq "StackPanel") {
                                 $checkbox = $null
-                                $checkbox = $item.Children | Where-Object { $_ -is [Windows.Controls.CheckBox] } | Select-Object -First 1
+                                $checkbox = $item.Children | Where-Object { $_ -is [Windows.Controls.CheckBox] -or $_.GetType().Name -eq "CheckBox" } | Select-Object -First 1
 
                                 $itemMatches = $false
 
@@ -669,6 +681,68 @@ function Get-WinUtilPackageLogSummary {
             "$packageName (no package id)"
         }
     })
+}
+
+function Get-WinUtilRegistryComboState {
+    <#
+    .SYNOPSIS
+        Finds the configured combo-box state matching the current registry values.
+
+    .PARAMETER Registry
+        Registry settings containing a value mapping for each supported state.
+
+    .OUTPUTS
+        The name of the matching state.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        $Registry
+    )
+
+    foreach ($state in $Registry[0].Values.PSObject.Properties) {
+        $stateMatches = $true
+        foreach ($setting in @($Registry)) {
+            $currentValue = Get-WinUtilRegistryComboValue -Setting $setting
+            $actualValue = if ($currentValue.Exists -and $null -ne $currentValue.Value) { $currentValue.Value } else { $setting.DefaultValue }
+            $configuredValue = $setting.Values.PSObject.Properties[$state.Name].Value
+            # Removal represents the effective Windows default when matching the current state.
+            $expectedValue = if ($configuredValue -eq "<RemoveEntry>") { $setting.DefaultValue } else { $configuredValue }
+            if ([string]$actualValue -ne [string]$expectedValue) {
+                $stateMatches = $false
+                break
+            }
+        }
+        if ($stateMatches) {
+            return $state.Name
+        }
+    }
+
+    throw "Registry values do not match a supported state."
+}
+
+function Get-WinUtilRegistryComboValue {
+    <#
+    .SYNOPSIS
+        Reads one registry value for a registry-backed combo-box state.
+
+    .PARAMETER Setting
+        The registry setting from the combo-box configuration.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        $Setting
+    )
+
+    try {
+        $item = Get-ItemProperty -Path $Setting.Path -Name $Setting.Name -ErrorAction Stop
+        $property = $item.PSObject.Properties[$Setting.Name]
+        return [pscustomobject]@{ Exists = $null -ne $property; Value = $property.Value }
+    } catch [System.Management.Automation.PSArgumentException] {
+        # The registry provider uses PSArgumentException when a named value is absent.
+        return [pscustomobject]@{ Exists = $false; Value = $null }
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return [pscustomobject]@{ Exists = $false; Value = $null }
+    }
 }
 
 function Get-WinUtilSelectedPackages {
@@ -1640,7 +1714,7 @@ Function Invoke-WinUtilCurrentSystem {
             $serviceKeys = $entry.service
             $entryType = $entry.Type
 
-            if ($registryKeys -or $serviceKeys) {
+            if (($registryKeys -or $serviceKeys) -and $entryType -ne "Combobox") {
                 $Values = @()
 
                 if ($entryType -eq "Toggle") {
@@ -3760,7 +3834,7 @@ function Invoke-WinUtilTweaks {
         }
     }
     if ($sync.configs.tweaks.$CheckBox.registry) {
-        $sync.configs.tweaks.$CheckBox.registry | ForEach-Object {
+        $sync.configs.tweaks.$CheckBox.registry | Where-Object { -not $psitem.Values } | ForEach-Object {
             Set-WinUtilRegistry -Name $psitem.Name -Path $psitem.Path -Type $psitem.Type -Value $psitem.$($values.registry)
         }
     }
@@ -4129,7 +4203,7 @@ function Set-WinUtilDNS {
 
     if($DNSProvider -eq "Default") {
         Write-WinUtilLog -Component "DNS" -Message "DNS provider is Default; no DNS changes applied."
-        return
+        return $true
     }
 
     try {
@@ -4143,11 +4217,17 @@ function Set-WinUtilDNS {
             if($null -eq $dns) {
                 Write-Warning "DNS provider $DNSProvider was not found in configuration."
                 Write-WinUtilLog -Level "ERROR" -Component "DNS" -Message "DNS provider $DNSProvider was not found in configuration."
-                return
+                return $false
             }
         }
 
         $dohSupported = [bool](Get-Command Add-DnsClientDohServerAddress -ErrorAction SilentlyContinue)
+        if ($DNSProvider -ne "DHCP" -and $dns.DohOnly -and -not $dohSupported) {
+            Write-Warning "DNS provider $DNSProvider requires DNS over HTTPS, which is not supported on this system."
+            Write-WinUtilLog -Level "ERROR" -Component "DNS" -Message "DNS provider $DNSProvider requires DNS over HTTPS, which is not supported on this system."
+            return $false
+        }
+
         $dnscacheBase = "HKLM:\System\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters"
 
         Foreach ($Adapter in $Adapters) {
@@ -4178,41 +4258,60 @@ function Set-WinUtilDNS {
                     Remove-Item -Path $dohInterfaceSettings -Recurse -Force -ErrorAction SilentlyContinue
                 }
             } else {
-                Write-WinUtilLog -Component "DNS" -Message "Setting IPv4 DNS on adapter $($Adapter.Name) (ifIndex: $($Adapter.ifIndex)) to $($dns.Primary), $($dns.Secondary)."
-                Set-DnsClientServerAddress -InterfaceIndex $Adapter.ifIndex -ServerAddresses ($dns.Primary, $dns.Secondary)
-                Write-WinUtilLog -Component "DNS" -Message "Setting IPv6 DNS on adapter $($Adapter.Name) (ifIndex: $($Adapter.ifIndex)) to $($dns.Primary6), $($dns.Secondary6)."
-                Set-DnsClientServerAddress -InterfaceIndex $Adapter.ifIndex -ServerAddresses ($dns.Primary6, $dns.Secondary6)
+                $ipv4Addresses = @(@($dns.Primary, $dns.Secondary) | Where-Object { $_ })
+                $ipv6Addresses = @(@($dns.Primary6, $dns.Secondary6) | Where-Object { $_ })
 
                 if ($dohSupported -and $dns.DohTemplate) {
-                    $ips = @($dns.Primary, $dns.Secondary, $dns.Primary6, $dns.Secondary6) | Where-Object { $_ }
-                    foreach ($ip in $ips) {
-                        $existing = Get-DnsClientDohServerAddress -ServerAddress $ip -ErrorAction SilentlyContinue
-                        if ($existing) {
-                            Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $dns.DohTemplate -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop
-                        } else {
-                            Write-WinUtilLog -Component "DNS" -Message "Registering DoH template for $ip."
-                            Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $dns.DohTemplate -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop
+                    try {
+                        $ips = @($dns.Primary, $dns.Secondary, $dns.Primary6, $dns.Secondary6) | Where-Object { $_ }
+                        foreach ($ip in $ips) {
+                            $dohTemplate = if ($dns.SecondaryDohTemplate -and @($dns.Secondary, $dns.Secondary6) -contains $ip) {
+                                $dns.SecondaryDohTemplate
+                            } else {
+                                $dns.DohTemplate
+                            }
+                            $existing = Get-DnsClientDohServerAddress -ServerAddress $ip -ErrorAction SilentlyContinue
+                            if ($existing) {
+                                Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $dohTemplate -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop
+                            } else {
+                                Write-WinUtilLog -Component "DNS" -Message "Registering DoH template for $ip."
+                                Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $dohTemplate -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop
+                            }
+
+                            $leaf = if ($ip.Contains(':')) { 'Doh6' } else { 'Doh' }
+                            $regPath = "$interfaceParams\DohInterfaceSettings\$leaf\$ip"
+
+                            if (-not (Test-Path $regPath)) {
+                                New-Item -Path $regPath -Force -ErrorAction Stop | Out-Null
+                            }
+                            New-ItemProperty -Path $regPath -Name "DohFlags" -Value 1 -PropertyType QWord -Force -ErrorAction Stop | Out-Null
                         }
-                        
-                        $leaf = if ($ip.Contains(':')) { 'Doh6' } else { 'Doh' }
-                        $regPath = "$interfaceParams\DohInterfaceSettings\$leaf\$ip"
-                        
-                        if (-not (Test-Path $regPath)) {
-                            New-Item -Path $regPath -Force -ErrorAction Stop | Out-Null
+                    } catch {
+                        if ($dns.DohOnly) {
+                            throw
                         }
-                        New-ItemProperty -Path $regPath -Name "DohFlags" -Value 1 -PropertyType QWord -Force -ErrorAction Stop | Out-Null
+
+                        Write-Warning "DNS over HTTPS setup for provider $DNSProvider failed; continuing with plain DNS."
+                        Write-WinUtilLog -Level "WARN" -Component "DNS" -Message "DNS over HTTPS setup for provider $DNSProvider failed; continuing with plain DNS: $($psitem.Exception.Message)"
                     }
                 }
+
+                Write-WinUtilLog -Component "DNS" -Message "Setting IPv4 DNS on adapter $($Adapter.Name) (ifIndex: $($Adapter.ifIndex)) to $($dns.Primary), $($dns.Secondary)."
+                Set-DnsClientServerAddress -InterfaceIndex $Adapter.ifIndex -ServerAddresses $ipv4Addresses -ErrorAction Stop
+                Write-WinUtilLog -Component "DNS" -Message "Setting IPv6 DNS on adapter $($Adapter.Name) (ifIndex: $($Adapter.ifIndex)) to $($dns.Primary6), $($dns.Secondary6)."
+                Set-DnsClientServerAddress -InterfaceIndex $Adapter.ifIndex -ServerAddresses $ipv6Addresses -ErrorAction Stop
             }
         }
         if ($DNSProvider -ne "DHCP" -and $dohSupported -and $dns.DohTemplate) {
             Clear-DnsClientCache
         }
         Write-WinUtilLog -Component "DNS" -Message "DNS provider change completed: $DNSProvider"
+        return $true
     } catch {
         Write-Warning "DNS provider $DNSProvider was not completed because an error occurred."
         Write-Warning $psitem.Exception.Message
         Write-WinUtilLog -Level "ERROR" -Component "DNS" -Message "DNS provider $DNSProvider was not completed: $($psitem.Exception.Message)"
+        return $false
     }
 }
 
@@ -4277,6 +4376,85 @@ function Set-WinUtilRegistry {
         Write-Warning "Unable to set $Name due to unhandled exception."
         Write-Warning $psitem.Exception.StackTrace
         Write-WinUtilLog -Level "ERROR" -Component "Registry" -Message "Unhandled exception while changing $Path\$Name`: $($psitem.Exception.Message)"
+    }
+}
+
+function Set-WinUtilRegistryComboState {
+    <#
+    .SYNOPSIS
+        Applies and verifies a config-defined registry combo-box state.
+
+    .PARAMETER Registry
+        Registry settings containing a value mapping for each supported state.
+
+    .PARAMETER State
+        The state name to apply.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        $Registry,
+
+        [Parameter(Mandatory)]
+        [string]$State
+    )
+
+    if ($Registry[0].Values.PSObject.Properties.Name -notcontains $State) {
+        throw "Unknown registry state '$State'."
+    }
+
+    # Preserve exact prior values so a partial update can be rolled back.
+    $previousValues = foreach ($setting in @($Registry)) {
+        $currentValue = Get-WinUtilRegistryComboValue -Setting $setting
+        [pscustomobject]@{ Setting = $setting; Exists = $currentValue.Exists; Value = $currentValue.Value }
+    }
+
+    try {
+        foreach ($setting in @($Registry)) {
+            $configuredValue = $setting.Values.PSObject.Properties[$State].Value
+            $previousValue = $previousValues | Where-Object Setting -EQ $setting
+            if ($configuredValue -ne "<RemoveEntry>" -or $previousValue.Exists) {
+                Set-WinUtilRegistry -Name $setting.Name -Path $setting.Path -Type $setting.Type -Value $configuredValue
+            }
+        }
+
+        # Set-WinUtilRegistry reports write errors without throwing, so verify each result explicitly.
+        foreach ($setting in @($Registry)) {
+            $configuredValue = $setting.Values.PSObject.Properties[$State].Value
+            $currentValue = Get-WinUtilRegistryComboValue -Setting $setting
+            $writeMatches = if ($configuredValue -eq "<RemoveEntry>") {
+                -not $currentValue.Exists
+            } else {
+                $currentValue.Exists -and [string]$currentValue.Value -eq [string]$configuredValue
+            }
+            if (-not $writeMatches) {
+                throw "The registry values did not match the requested state."
+            }
+        }
+    } catch {
+        $applyError = $_.Exception.Message
+        if ([string]::IsNullOrWhiteSpace($applyError)) {
+            $applyError = "The registry values did not match the requested state."
+        }
+        $rollbackFailed = $false
+        foreach ($previousValue in $previousValues) {
+            try {
+                $currentValue = Get-WinUtilRegistryComboValue -Setting $previousValue.Setting
+                if ($previousValue.Exists -or $currentValue.Exists) {
+                    $rollbackValue = if ($previousValue.Exists) { $previousValue.Value } else { "<RemoveEntry>" }
+                    Set-WinUtilRegistry -Name $previousValue.Setting.Name -Path $previousValue.Setting.Path -Type $previousValue.Setting.Type -Value $rollbackValue
+                }
+                $restoredValue = Get-WinUtilRegistryComboValue -Setting $previousValue.Setting
+                if ($restoredValue.Exists -ne $previousValue.Exists -or ($restoredValue.Exists -and [string]$restoredValue.Value -ne [string]$previousValue.Value)) {
+                    $rollbackFailed = $true
+                }
+            } catch {
+                $rollbackFailed = $true
+            }
+        }
+        if ($rollbackFailed) {
+            throw "Unable to apply registry state '$State': $applyError. The previous registry state could not be restored."
+        }
+        throw "Unable to apply registry state '$State': $applyError"
     }
 }
 
@@ -6611,7 +6789,14 @@ function Invoke-WPFtweaksbutton {
     }
 
     if ($dnsProvider -ne "Default") {
-      Set-WinUtilDNS -DNSProvider $dnsProvider
+      $dnsResult = @(Set-WinUtilDNS -DNSProvider $dnsProvider)
+      if ($dnsResult[-1] -ne $true) {
+        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "DNS change failed" -Percent 100
+        $sync.ProcessRunning = $false
+        Invoke-WPFUIThread -ScriptBlock { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+        Write-WinUtilLog -Level "ERROR" -Component "Tweaks" -Message "Tweaks workflow stopped because the DNS change failed."
+        return
+      }
     }
 
     for ($i = 0; $i -lt $tweaks.Count; $i++) {
@@ -6682,7 +6867,7 @@ function Invoke-WPFUIElements {
     # Add ColumnDefinitions to the target Grid
     for ($i = 0; $i -lt $columncount; $i++) {
         $colDef = New-Object Windows.Controls.ColumnDefinition
-        $colDef.Width = New-Object Windows.GridLength(1, [Windows.GridUnitType]::Star)
+        $colDef.Width = New-Object System.Windows.GridLength([double]1, [System.Windows.GridUnitType]::Star)
         $targetGrid.ColumnDefinitions.Add($colDef) | Out-Null
     }
 
@@ -6709,6 +6894,8 @@ function Invoke-WPFUIElements {
             Description = $entryInfo.description
             Type        = $entryInfo.type
             ComboItems  = $entryInfo.ComboItems
+            ComboDescriptions = $entryInfo.ComboDescriptions
+            Registry    = $entryInfo.registry
             Checked     = $entryInfo.Checked
             ButtonWidth = $entryInfo.ButtonWidth
             GroupName   = $entryInfo.GroupName  # Added for RadioButton groupings
@@ -6744,36 +6931,55 @@ function Invoke-WPFUIElements {
         $dockPanelContainer = New-Object Windows.Controls.DockPanel
         $border.Child = $dockPanelContainer
 
-        # Create an ItemsControl for application content
-        $itemsControl = New-Object Windows.Controls.ItemsControl
-        $itemsControl.HorizontalAlignment = 'Stretch'
-        $itemsControl.VerticalAlignment = 'Stretch'
+        # Create a StackPanel for application content controls
+        $stackPanelContainer = New-Object Windows.Controls.StackPanel
+        $stackPanelContainer.HorizontalAlignment = 'Stretch'
+        $stackPanelContainer.VerticalAlignment = 'Stretch'
 
-        # Set the ItemsPanel to a VirtualizingStackPanel
-        $itemsPanelTemplate = New-Object Windows.Controls.ItemsPanelTemplate
-        $factory = New-Object Windows.FrameworkElementFactory ([Windows.Controls.VirtualizingStackPanel])
-        $itemsPanelTemplate.VisualTree = $factory
-        $itemsControl.ItemsPanel = $itemsPanelTemplate
+        # Check if the target grid (or any ancestor) is already inside a ScrollViewer
+        $hasOuterScrollViewer = $false
+        $currentElement = $targetGrid
+        while ($null -ne $currentElement) {
+            if ($currentElement -is [System.Windows.Controls.ScrollViewer] -or $currentElement.GetType().Name -eq "ScrollViewer") {
+                $hasOuterScrollViewer = $true
+                break
+            }
+            $currentElement = $currentElement.Parent
+        }
 
-        # Set virtualization properties
-        $itemsControl.SetValue([Windows.Controls.VirtualizingStackPanel]::IsVirtualizingProperty, $true)
-        $itemsControl.SetValue([Windows.Controls.VirtualizingStackPanel]::VirtualizationModeProperty, [Windows.Controls.VirtualizationMode]::Recycling)
+        if ($hasOuterScrollViewer) {
+            # Add StackPanel directly to DockPanel without nesting a ScrollViewer
+            [Windows.Controls.DockPanel]::SetDock($stackPanelContainer, [Windows.Controls.Dock]::Bottom)
+            $dockPanelContainer.Children.Add($stackPanelContainer) | Out-Null
+        }
+        else {
+            # Create a ScrollViewer for targets that do not already have an outer ScrollViewer
+            $scrollViewer = New-Object Windows.Controls.ScrollViewer
+            $scrollViewer.VerticalScrollBarVisibility = "Auto"
+            $scrollViewer.HorizontalScrollBarVisibility = "Disabled"
+            $scrollViewer.HorizontalAlignment = 'Stretch'
+            $scrollViewer.VerticalAlignment = 'Stretch'
+            $scrollViewer.Content = $stackPanelContainer
 
-        # Add the ItemsControl directly to the DockPanel
-        [Windows.Controls.DockPanel]::SetDock($itemsControl, [Windows.Controls.Dock]::Bottom)
-        $dockPanelContainer.Children.Add($itemsControl) | Out-Null
+            [Windows.Controls.DockPanel]::SetDock($scrollViewer, [Windows.Controls.Dock]::Bottom)
+            $dockPanelContainer.Children.Add($scrollViewer) | Out-Null
+        }
         $panelcount++
 
-        # Now proceed with adding category labels and entries to $itemsControl
+        # Now proceed with adding category labels and entries to $stackPanelContainer
         foreach ($category in ($organizedData[$panelKey].Keys | Sort-Object)) {
             $count++
 
             $label = New-Object Windows.Controls.Label
-            $label.Content = $category -replace ".*__", ""
+            $categoryCleanName = $category -replace ".*__", ""
+            $label.Content = $categoryCleanName
+            $label.Focusable = $true
+            $label.IsTabStop = $true
+            [System.Windows.Automation.AutomationProperties]::SetName($label, $categoryCleanName)
             $label.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "HeaderFontSize")
             $label.SetResourceReference([Windows.Controls.Control]::FontFamilyProperty, "HeaderFontFamily")
             $label.UseLayoutRounding = $true
-            $itemsControl.Items.Add($label) | Out-Null
+            $stackPanelContainer.Children.Add($label) | Out-Null
             $sync[$category] = $label
 
             # Sort entries by type (checkboxes first, then buttons, then comboboxes, notes last) and then alphabetically by Content
@@ -6808,7 +7014,7 @@ function Invoke-WPFUIElements {
                         $label.SetResourceReference([Windows.Controls.Control]::ForegroundProperty, "MainForegroundColor")
                         $label.UseLayoutRounding = $true
                         $dockPanel.Children.Add($label) | Out-Null
-                        $itemsControl.Items.Add($dockPanel) | Out-Null
+                        $stackPanelContainer.Children.Add($dockPanel) | Out-Null
 
                         $sync[$entryInfo.Name] = $checkBox
                         $sync[$entryInfo.Name].IsChecked = (Get-WinUtilToggleStatus $entryInfo.Name)
@@ -6846,7 +7052,7 @@ function Invoke-WPFUIElements {
                             contentOff = if ($entryInfo.Content.Count -ge 2) { $entryInfo.Content[1] } else { $contentOn }
                         }
 
-                        $itemsControl.Items.Add($toggleButton) | Out-Null
+                        $stackPanelContainer.Children.Add($toggleButton) | Out-Null
 
                         $sync[$entryInfo.Name] = $toggleButton
 
@@ -6880,6 +7086,7 @@ function Invoke-WPFUIElements {
                         $label = New-Object Windows.Controls.Label
                         $label.Content = $entryInfo.Content
                         $label.HorizontalAlignment = "Left"
+                        $label.ToolTip = $entryInfo.Description
                         $label.VerticalAlignment = "Center"
                         $label.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "ButtonFontSize")
                         $label.UseLayoutRounding = $true
@@ -6894,35 +7101,115 @@ function Invoke-WPFUIElements {
                         $comboBox.SetResourceReference([Windows.Controls.Control]::MarginProperty, "ButtonMargin")
                         $comboBox.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "ButtonFontSize")
                         $comboBox.UseLayoutRounding = $true
+                        $comboBox.Tag = [pscustomobject]@{
+                            Registry = $entryInfo.Registry
+                            State = $null
+                        }
                         [System.Windows.Automation.AutomationProperties]::SetName($comboBox, $entryInfo.Content)
 
-                        foreach ($comboitem in ($entryInfo.ComboItems -split " ")) {
+                        $comboItems = if ($entryInfo.ComboItems -is [string]) {
+                            if ($entryInfo.ComboItems.Contains("|")) {
+                                $entryInfo.ComboItems -split "\|"
+                            } else {
+                                $entryInfo.ComboItems -split " "
+                            }
+                        } else {
+                            @($entryInfo.ComboItems)
+                        }
+
+                        foreach ($comboitem in $comboItems) {
                             $comboBoxItem = New-Object Windows.Controls.ComboBoxItem
                             $comboBoxItem.Content = $comboitem
+                            if ($entryInfo.ComboDescriptions) {
+                                $comboDescription = $entryInfo.ComboDescriptions.PSObject.Properties[$comboitem].Value
+                                if ($comboDescription) {
+                                    $comboBoxItem.ToolTip = $comboDescription
+                                }
+                            }
                             $comboBoxItem.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "ButtonFontSize")
                             $comboBoxItem.UseLayoutRounding = $true
                             $comboBox.Items.Add($comboBoxItem) | Out-Null
                         }
 
                         $horizontalStackPanel.Children.Add($comboBox) | Out-Null
-                        $itemsControl.Items.Add($horizontalStackPanel) | Out-Null
+                        $stackPanelContainer.Children.Add($horizontalStackPanel) | Out-Null
 
-                        $comboBox.SelectedIndex = 0
+                        if ($entryInfo.Registry -and @($entryInfo.Registry)[0].Values) {
+                            try {
+                                $comboBox.Tag.State = Get-WinUtilRegistryComboState -Registry $entryInfo.Registry
+                                $comboBox.SelectedIndex = @($comboBox.Items.Content).IndexOf([string]$comboBox.Tag.State)
+                            } catch {
+                                $unknownStateItem = New-Object Windows.Controls.ComboBoxItem
+                                $unknownStateItem.Content = "Custom / Unknown - select a state"
+                                $unknownStateItem.IsEnabled = $false
+                                $unknownStateItem.ToolTip = "$($_.Exception.Message) Select one of the supported states to replace these values."
+                                $comboBox.Items.Add($unknownStateItem) | Out-Null
+                                $comboBox.SelectedItem = $unknownStateItem
+                                $comboBox.ToolTip = $unknownStateItem.ToolTip
+                            }
+                        } else {
+                            $comboBox.SelectedIndex = 0
+                        }
 
                         # Set initial text
                         if ($comboBox.Items.Count -gt 0) {
-                            $comboBox.Text = $comboBox.Items[0].Content
+                            $comboBox.Text = $comboBox.SelectedItem.Content
                         }
+
+                        $sync[$entryInfo.Name] = $comboBox
 
                         # Add SelectionChanged event handler to update the text property
                         $comboBox.Add_SelectionChanged({
                             $selectedItem = $this.SelectedItem
                             if ($selectedItem) {
                                 $this.Text = $selectedItem.Content
+                                $registry = $this.Tag.Registry
+                                if ($registry -and $selectedItem.IsEnabled -and $selectedItem.Content -ne $this.Tag.State) {
+                                    try {
+                                        Set-WinUtilRegistryComboState -Registry $registry -State $selectedItem.Content
+                                        $this.Tag.State = $selectedItem.Content
+                                        $this.ToolTip = $null
+                                        $unknownStateItem = @($this.Items) | Where-Object Content -EQ "Custom / Unknown - select a state" | Select-Object -First 1
+                                        if ($unknownStateItem) {
+                                            $this.Items.Remove($unknownStateItem)
+                                        }
+                                    } catch {
+                                        $applyError = $_.Exception.Message
+                                        if ([string]::IsNullOrWhiteSpace($applyError)) {
+                                            $applyError = "Unable to apply registry state '$($selectedItem.Content)'."
+                                        }
+                                        $previousState = if ($this.Tag.State) { $this.Tag.State } else { "Custom / Unknown - select a state" }
+                                        $this.SelectedItem = @($this.Items) | Where-Object Content -EQ $previousState | Select-Object -First 1
+                                        [System.Windows.MessageBox]::Show(
+                                            $applyError,
+                                            "WinUtil",
+                                            [System.Windows.MessageBoxButton]::OK,
+                                            [System.Windows.MessageBoxImage]::Warning
+                                        ) | Out-Null
+                                    }
+                                }
                             }
                         })
 
-                        $sync[$entryInfo.Name] = $comboBox
+                        if ($entryInfo.Registry -and @($entryInfo.Registry)[0].Values -and $entryInfo.Link) {
+                            $textBlock = New-Object Windows.Controls.TextBlock
+                            $textBlock.Name = $comboBox.Name + "Link"
+                            $textBlock.Text = "(?)"
+                            $textBlock.ToolTip = $entryInfo.Link
+                            $textBlock.Style = $HoverTextBlockStyle
+                            $textBlock.UseLayoutRounding = $true
+                            $textBlock.VerticalAlignment = "Center"
+                            $textBlock.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "FontSize")
+                            $textBlock.Tag = $comboBox
+
+                            $textBlock.Add_MouseUp({
+                                [System.Object]$Sender = $args[0]
+                                Start-Process $Sender.ToolTip -ErrorAction Stop
+                            })
+
+                            $horizontalStackPanel.Children.Add($textBlock) | Out-Null
+                            $sync[$textBlock.Name] = $textBlock
+                        }
                     }
 
                     "Button" {
@@ -6937,7 +7224,7 @@ function Invoke-WPFUIElements {
                             $button.Width = [math]::Max($baseWidth, 350)
                         }
                         [System.Windows.Automation.AutomationProperties]::SetName($button, $entryInfo.Content)
-                        $itemsControl.Items.Add($button) | Out-Null
+                        $stackPanelContainer.Children.Add($button) | Out-Null
 
                         $sync[$entryInfo.Name] = $button
 
@@ -6964,7 +7251,7 @@ function Invoke-WPFUIElements {
                             $radioButtonGroups[$entryInfo.GroupName] = $groupStackPanel
 
                             # Add the group container to the ItemsControl
-                            $itemsControl.Items.Add($groupStackPanel) | Out-Null
+                            $stackPanelContainer.Children.Add($groupStackPanel) | Out-Null
                         }
                         else {
                             # Retrieve the existing group container
@@ -7009,7 +7296,7 @@ function Invoke-WPFUIElements {
                         $textBlock.Inlines.Add($bulletBadge)
                         $textBlock.Inlines.Add($textRun)
 
-                        $itemsControl.Items.Add($textBlock) | Out-Null
+                        $stackPanelContainer.Children.Add($textBlock) | Out-Null
                     }
 
                     default {
@@ -7069,7 +7356,7 @@ function Invoke-WPFUIElements {
                             $sync[$textBlock.Name] = $textBlock
                         }
 
-                        $itemsControl.Items.Add($horizontalStackPanel) | Out-Null
+                        $stackPanelContainer.Children.Add($horizontalStackPanel) | Out-Null
                         $sync[$entryInfo.Name] = $checkBox
 
                         $sync[$entryInfo.Name].Add_Checked({
@@ -9980,6 +10267,60 @@ $sync.configs.dns = @'
     "Primary6": "2a10:50c0::bad1:ff",
     "Secondary6": "2a10:50c0::bad2:ff",
     "DohTemplate": "https://family.adguard-dns.com/dns-query"
+  },
+  "Mullvad": {
+    "Primary": "194.242.2.2",
+    "Secondary": "194.242.2.3",
+    "Primary6": "2a07:e340::2",
+    "Secondary6": "2a07:e340::3",
+    "DohOnly": true,
+    "DohTemplate": "https://dns.mullvad.net/dns-query",
+    "SecondaryDohTemplate": "https://adblock.dns.mullvad.net/dns-query"
+  },
+  "Mullvad_Ads_Trackers": {
+    "Primary": "194.242.2.3",
+    "Secondary": "194.242.2.2",
+    "Primary6": "2a07:e340::3",
+    "Secondary6": "2a07:e340::2",
+    "DohOnly": true,
+    "DohTemplate": "https://adblock.dns.mullvad.net/dns-query",
+    "SecondaryDohTemplate": "https://dns.mullvad.net/dns-query"
+  },
+  "Mullvad_Ads_Trackers_Malware": {
+    "Primary": "194.242.2.4",
+    "Secondary": "194.242.2.3",
+    "Primary6": "2a07:e340::4",
+    "Secondary6": "2a07:e340::3",
+    "DohOnly": true,
+    "DohTemplate": "https://base.dns.mullvad.net/dns-query",
+    "SecondaryDohTemplate": "https://adblock.dns.mullvad.net/dns-query"
+  },
+  "Mullvad_Ads_Trackers_Malware_Social": {
+    "Primary": "194.242.2.5",
+    "Secondary": "194.242.2.4",
+    "Primary6": "2a07:e340::5",
+    "Secondary6": "2a07:e340::4",
+    "DohOnly": true,
+    "DohTemplate": "https://extended.dns.mullvad.net/dns-query",
+    "SecondaryDohTemplate": "https://base.dns.mullvad.net/dns-query"
+  },
+  "Mullvad_Ads_Trackers_Malware_Adult_Gambling": {
+    "Primary": "194.242.2.6",
+    "Secondary": "194.242.2.5",
+    "Primary6": "2a07:e340::6",
+    "Secondary6": "2a07:e340::5",
+    "DohOnly": true,
+    "DohTemplate": "https://family.dns.mullvad.net/dns-query",
+    "SecondaryDohTemplate": "https://extended.dns.mullvad.net/dns-query"
+  },
+  "Mullvad_Ads_Trackers_Malware_Adult_Gambling_Social": {
+    "Primary": "194.242.2.9",
+    "Secondary": "194.242.2.6",
+    "Primary6": "2a07:e340::9",
+    "Secondary6": "2a07:e340::6",
+    "DohOnly": true,
+    "DohTemplate": "https://all.dns.mullvad.net/dns-query",
+    "SecondaryDohTemplate": "https://family.dns.mullvad.net/dns-query"
   }
 }
 '@ | ConvertFrom-Json
@@ -11793,28 +12134,40 @@ $sync.configs.tweaks = @'
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/scrollbars"
   },
-  "WPFToggleMultiplaneOverlay": {
+  "WPFMultiplaneOverlay": {
     "Content": "多平面重疊 (Multiplane Overlay)",
-    "Description": "多平面重疊 (Multiplane Overlay) 會合成多個影像圖層，有時可能導致顯示卡發生問題。",
+    "Description": "Multiplane Overlay composes multiple image layers, which can sometimes cause issues with graphics cards. Changes to this preference are applied immediately.",
     "category": "自訂偏好設定",
     "panel": "2",
-    "Type": "Toggle",
+    "Type": "Combobox",
+    "ComboItems": "Enabled|Disabled (Compatibility)|Fully Disabled",
+    "ComboDescriptions": {
+      "Enabled": "Uses Windows' default overlay behavior.",
+      "Disabled (Compatibility)": "Disables MPO using OverlayTestMode=5, the less aggressive compatibility method.",
+      "Fully Disabled": "Disables MPO using OverlayTestMode=5 and DisableOverlays=1, the more aggressive method."
+    },
     "registry": [
       {
         "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\Dwm",
         "Name": "OverlayTestMode",
-        "Value": "0",
         "Type": "DWord",
-        "OriginalValue": "5",
-        "DefaultState": "true"
+        "DefaultValue": "0",
+        "Values": {
+          "Enabled": "<RemoveEntry>",
+          "Disabled (Compatibility)": "5",
+          "Fully Disabled": "5"
+        }
       },
       {
         "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
         "Name": "DisableOverlays",
-        "Value": "0",
         "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "true"
+        "DefaultValue": "0",
+        "Values": {
+          "Enabled": "<RemoveEntry>",
+          "Disabled (Compatibility)": "<RemoveEntry>",
+          "Fully Disabled": "1"
+        }
       }
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/multiplaneoverlay"
@@ -12178,7 +12531,7 @@ $sync.configs.tweaks = @'
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "Type": "Combobox",
-    "ComboItems": "Default DHCP Google Cloudflare Cloudflare_Malware Cloudflare_Malware_Adult Open_DNS Quad9 AdGuard_Ads_Trackers AdGuard_Ads_Trackers_Malware_Adult",
+    "ComboItems": "Default DHCP Google Cloudflare Cloudflare_Malware Cloudflare_Malware_Adult Open_DNS Quad9 AdGuard_Ads_Trackers AdGuard_Ads_Trackers_Malware_Adult Mullvad Mullvad_Ads_Trackers Mullvad_Ads_Trackers_Malware Mullvad_Ads_Trackers_Malware_Social Mullvad_Ads_Trackers_Malware_Adult_Gambling Mullvad_Ads_Trackers_Malware_Adult_Gambling_Social",
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/changedns"
   },
   "WPFAddUltPerf": {
@@ -13459,6 +13812,8 @@ $inputXML = @'
                     HorizontalAlignment="Right" VerticalAlignment="Center"
                     Margin="0,0,2,0"
                     FontFamily="Segoe MDL2 Assets"
+                    ToolTip="Settings"
+                    AutomationProperties.Name="Settings"
                     Content="&#xE713;"/>
                     <Popup Name="SettingsPopup"
                     IsOpen="False"
