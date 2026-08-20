@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.08.19
+    Version        : 26.08.20
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.08.19"
+$sync.version = "26.08.20"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -158,9 +158,9 @@ function Find-AppsByNameOrDescription {
 
         .DESCRIPTION
             Search text and categories are independent filters that both have to pass. An entry is
-            shown when its name or description matches the search text, and when its category is in
-            the selected set. An empty search matches everything, and an empty category set matches
-            every category.
+            shown when its name, description, or application preset key matches the search text, and
+            when its category is in the selected set. An empty search matches everything, and an empty
+            category set matches every category.
 
             While either filter is active the matching categories are expanded, since a collapsed
             category would otherwise hide the very results that were asked for. With no filter at
@@ -268,7 +268,8 @@ function Find-AppsByNameOrDescription {
                         $categoryMatch = -not $hasCategories -or $activeCategories -contains $appEntry.Category
                         $textMatch = -not $hasSearch -or
                             $appEntry.Content -like "*$escapedSearchString*" -or
-                            $appEntry.Description -like "*$escapedSearchString*"
+                            $appEntry.Description -like "*$escapedSearchString*" -or
+                            $appTag -like "*$escapedSearchString*"
 
                         if ($categoryMatch -and $textMatch) {
                             $appControl.Visibility = [Windows.Visibility]::Visible
@@ -629,6 +630,32 @@ function Find-TweaksByNameOrDescription {
     }
 }
 
+function Get-WinUtilEntryToolTip {
+    <#
+        .SYNOPSIS
+            Builds the tooltip string for an app/tweak/feature entry: its description plus its preset JSON key
+
+        .PARAMETER Description
+            The entry's description from the config JSON. May be null or empty.
+
+        .PARAMETER Key
+            The entry's JSON key as used in preset files (e.g. WPFInstallbrave, WPFTweaksTele).
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Description,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Key
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Description)) {
+        return "Preset key: $Key"
+    }
+
+    return "$Description`n`nPreset key: $Key"
+}
+
 function Get-WinUtilInstalledAPPX {
     <#
 
@@ -941,7 +968,7 @@ function Initialize-InstallAppEntry {
         $border = New-Object Windows.Controls.Border
         $border.Style = $sync.Form.Resources.AppEntryBorderStyle
         $border.Tag = $appKey
-        $border.ToolTip = $app.description
+        $border.ToolTip = Get-WinUtilEntryToolTip -Description $app.description -Key $appKey
         $border.Add_MouseLeftButtonUp({
             # Resolve through $sync because the border's child is a layout Grid for FOSS entries
             $childCheckbox = $sync.$($this.Tag)
@@ -1204,7 +1231,6 @@ function Initialize-WinUtilTabContent {
 
     switch ($TabName) {
         "Install" {
-            Invoke-WPFUIElements -configVariable $sync.configs.appnavigation -targetGridName "appscategory" -columncount 1
             Initialize-WPFUI -targetGridName "appscategory"
 
             Initialize-WPFUI -targetGridName "appspanel"
@@ -2476,6 +2502,34 @@ function Invoke-WinUtilISOCleanAndReset {
     $script.BeginInvoke()
 }
 
+function Get-WinUtilOSCDImgPath {
+    # Windows ADK installation
+    $oscdimg = Get-ChildItem "C:\Program Files (x86)\Windows Kits" -Recurse -Filter "oscdimg.exe" -ErrorAction SilentlyContinue |
+               Select-Object -First 1 -ExpandProperty FullName
+    if (-not $oscdimg) {
+        # Per-user winget installation
+        $oscdimg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "oscdimg.exe" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match 'Microsoft\.OSCDIMG' } |
+                   Select-Object -First 1 -ExpandProperty FullName
+    }
+
+    if (-not $oscdimg) {
+        # Installation available through the current process PATH
+        $oscdimg = Get-Command oscdimg.exe -CommandType Application -ErrorAction SilentlyContinue |
+                   Select-Object -First 1 -ExpandProperty Source
+    }
+
+    if (-not $oscdimg) {
+        # WinGet links that may not yet be available through the current process PATH
+        $oscdimg = @(
+            "$env:LOCALAPPDATA\Microsoft\WinGet\Links\oscdimg.exe"
+            "$env:ProgramFiles\WinGet\Links\oscdimg.exe"
+        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    }
+
+    return $oscdimg
+}
+
 function Invoke-WinUtilISOExport {
     $contentsDir = $sync["Win11ISOContentsDir"]
 
@@ -2498,14 +2552,7 @@ function Invoke-WinUtilISOExport {
 
     $outputISO = $dlg.FileName
 
-    # Locate oscdimg.exe (Windows ADK or winget per-user install)
-    $oscdimg = Get-ChildItem "C:\Program Files (x86)\Windows Kits" -Recurse -Filter "oscdimg.exe" |
-               Select-Object -First 1 -ExpandProperty FullName
-    if (-not $oscdimg) {
-        $oscdimg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "oscdimg.exe" |
-                   Where-Object { $_.FullName -match 'Microsoft\.OSCDIMG' } |
-                   Select-Object -First 1 -ExpandProperty FullName
-    }
+    $oscdimg = Get-WinUtilOSCDImgPath
 
     if (-not $oscdimg) {
         Write-WinUtilISOLog "oscdimg.exe not found. Attempting to install via winget..."
@@ -2516,9 +2563,7 @@ function Invoke-WinUtilISOExport {
             $winget = Get-Command winget
             $result = & $winget install -e --id Microsoft.OSCDIMG --accept-package-agreements --accept-source-agreements
             Write-WinUtilISOLog "winget output: $result"
-            $oscdimg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "oscdimg.exe" |
-                       Where-Object { $_.FullName -match 'Microsoft\.OSCDIMG' } |
-                       Select-Object -First 1 -ExpandProperty FullName
+            $oscdimg = Get-WinUtilOSCDImgPath
         } catch {
             Write-WinUtilISOLog "winget not available or install failed: $_"
         }
@@ -4493,7 +4538,10 @@ Function Set-WinUtilService {
 
         # Service exists, proceed with changing properties -- while handling auto delayed start for PWSH 5
         if (($PSVersionTable.PSVersion.Major -lt 7) -and ($StartupType -eq "AutomaticDelayedStart")) {
-            sc.exe config $Name start=delayed-auto
+            sc.exe config $Name start= delayed-auto
+            if ($LASTEXITCODE -ne 0) {
+                throw "sc.exe config failed with exit code $LASTEXITCODE"
+            }
         } else {
             $service | Set-Service -StartupType $StartupType -ErrorAction Stop
         }
@@ -5091,7 +5139,24 @@ function Update-WinUtilAppCategoryChip {
     }
 }
 
-function Update-WinUtilSelections ($flatJson) {
+function Update-WinUtilSelections {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$flatJson,
+
+        [switch]$Replace,
+
+        [switch]$SkipUnknown
+    )
+
+    $nextSelections = @{
+        selectedApps     = [System.Collections.Generic.List[string]]::new()
+        selectedTweaks   = [System.Collections.Generic.List[string]]::new()
+        selectedToggles  = [System.Collections.Generic.List[string]]::new()
+        selectedFeatures = [System.Collections.Generic.List[string]]::new()
+        selectedAppx     = [System.Collections.Generic.List[string]]::new()
+    }
+
     foreach ($cbkey in $flatJson) {
 
         $listName = switch -Regex ($cbkey) {
@@ -5102,7 +5167,59 @@ function Update-WinUtilSelections ($flatJson) {
             '^WPFAppx'    { 'selectedAppx' }
         }
 
-        $sync.$listName.Add($cbkey)
+        if (-not $listName) {
+            if ($SkipUnknown) {
+                $cbkey
+                continue
+            }
+            throw "Unsupported selection key '$cbkey'."
+        }
+
+        $isKnownSelection = switch ($listName) {
+            'selectedApps' {
+                $sync.configs.applicationsHashtable.ContainsKey($cbkey)
+            }
+            'selectedTweaks' {
+                $null -ne $sync.configs.tweaks.PSObject.Properties[$cbkey]
+            }
+            'selectedToggles' {
+                $null -ne $sync.configs.tweaks.PSObject.Properties[$cbkey]
+            }
+            'selectedFeatures' {
+                $null -ne $sync.configs.feature.PSObject.Properties[$cbkey]
+            }
+            'selectedAppx' {
+                $sync.configs.appxHashtable.ContainsKey($cbkey)
+            }
+        }
+
+        if (-not $isKnownSelection) {
+            if ($SkipUnknown) {
+                $cbkey
+                continue
+            }
+            throw "Unknown selection key '$cbkey'."
+        }
+
+        $nextSelections[$listName].Add($cbkey)
+    }
+
+    $validSelectionCount = ($nextSelections.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
+    if ($SkipUnknown -and $validSelectionCount -eq 0) {
+        return
+    }
+
+    if ($Replace) {
+        foreach ($listName in $nextSelections.Keys) {
+            $sync[$listName] = $nextSelections[$listName]
+        }
+        return
+    }
+
+    foreach ($listName in $nextSelections.Keys) {
+        foreach ($cbkey in $nextSelections[$listName]) {
+            $sync.$listName.Add($cbkey)
+        }
     }
 }
 
@@ -5197,10 +5314,7 @@ function Initialize-WPFUI {
 
     switch ($TargetGridName) {
         "appscategory"{
-            # TODO
-            # Switch UI generation of the sidebar to this function
-            # $sync.ItemsControl = Initialize-InstallAppArea -TargetElement $TargetGridName
-            # ...
+            Invoke-WPFUIElements -configVariable $sync.configs.appnavigation -targetGridName "appscategory" -columncount 1
 
             # Create and configure a popup for displaying selected apps
             $selectedAppsPopup = New-Object Windows.Controls.Primitives.Popup
@@ -5803,9 +5917,9 @@ function Invoke-WPFFixesUpdate {
     if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate") {
         Write-Progress -Id 0 -Activity "Repairing Windows Update" -Status "Removing WSUS client settings..." -PercentComplete 60
         Write-Progress -Id 6 -ParentId 0 -Activity "Removing WSUS client settings" -PercentComplete 0
-        Start-Process -NoNewWindow -FilePath "REG" -ArgumentList "DELETE", "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate", "/v", "AccountDomainSid", "/f" -RedirectStandardError "NUL"
-        Start-Process -NoNewWindow -FilePath "REG" -ArgumentList "DELETE", "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate", "/v", "PingID", "/f" -RedirectStandardError "NUL"
-        Start-Process -NoNewWindow -FilePath "REG" -ArgumentList "DELETE", "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate", "/v", "SusClientId", "/f" -RedirectStandardError "NUL"
+        Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate" -Name "AccountDomainSid" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate" -Name "PingID" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate" -Name "SusClientId" -ErrorAction SilentlyContinue
         Write-Progress -Id 6 -ParentId 0 -Activity "Removing WSUS client settings" -Status "Completed" -PercentComplete 100
     }
 
@@ -6103,9 +6217,31 @@ function Invoke-WPFImpex {
                         Write-Error "Failed to load the JSON file from the specified path or URL: $_"
                         return
                     }
-                    # TODO how to handle old style? detected json type then flatten it in a func?
-                    # $flattenedJson = $jsonFile.PSObject.Properties.Where({ $_.Name -ne "Install" }).ForEach({ $_.Value })
-                    $flattenedJson = $jsonFile
+                    $isLegacyConfig = $jsonFile -is [System.Management.Automation.PSCustomObject] -and
+                        $null -ne $jsonFile.PSObject.Properties["Install"] -and
+                        $null -ne $jsonFile.PSObject.Properties["WPFInstall"]
+                    if ($isLegacyConfig) {
+                        Write-WinUtilLog -Component "Impex" -Message "Detected legacy WinUtil config structure; flattening import object."
+                        # Legacy exports stored checkbox keys in WPFInstall and duplicated package
+                        # source metadata in Install. Current package IDs come from the app catalog,
+                        # so only the selection-key properties are restored.
+                        $flattenedJson = @(
+                            foreach ($property in $jsonFile.PSObject.Properties) {
+                                if ($property.Name -notmatch '^WPF(?:Install|Tweaks|Toggle|Feature|Appx)') {
+                                    continue
+                                }
+
+                                foreach ($selection in @($property.Value)) {
+                                    if ($selection -is [string] -and -not [string]::IsNullOrWhiteSpace($selection)) {
+                                        $selection
+                                    }
+                                }
+                            }
+                        )
+                    } else {
+                        # New style config: flat array of strings
+                        $flattenedJson = $jsonFile
+                    }
 
                     if (-not $flattenedJson) {
                         [System.Windows.MessageBox]::Show(
@@ -6114,15 +6250,37 @@ function Invoke-WPFImpex {
                         return
                     }
 
-                    # Clear all existing selections before importing so the import replaces
-                    # the current state rather than merging with it
-                    $sync.selectedAppx = [System.Collections.Generic.List[string]]::new()
-                    $sync.selectedApps = [System.Collections.Generic.List[string]]::new()
-                    $sync.selectedTweaks = [System.Collections.Generic.List[string]]::new()
-                    $sync.selectedToggles = [System.Collections.Generic.List[string]]::new()
-                    $sync.selectedFeatures = [System.Collections.Generic.List[string]]::new()
+                    # Modern configs stay strict. Legacy configs can reference entries that no
+                    # longer exist, so restore supported selections and report the retired keys.
+                    if ($isLegacyConfig) {
+                        $skippedSelections = @(Update-WinUtilSelections -flatJson $flattenedJson -Replace -SkipUnknown)
 
-                    Update-WinUtilSelections -flatJson $flattenedJson
+                        if ($skippedSelections.Count -gt 0) {
+                            $skippedSummary = $skippedSelections -join ", "
+                            Write-WinUtilLog -Component "Impex" -Level "WARN" -Message "Skipped unsupported legacy selections: $skippedSummary"
+                        }
+
+                        if ($skippedSelections.Count -eq @($flattenedJson).Count) {
+                            if ($sync.Form) {
+                                Show-WinUtilMessage -Message "This legacy configuration contains no settings supported by this version of WinUtil. No changes have been made." -Title "Unsupported Legacy Configuration" -Icon "Warning" | Out-Null
+                            }
+                            return
+                        }
+
+                        if ($skippedSelections.Count -gt 0) {
+                            $skippedDisplay = @($skippedSelections | Select-Object -First 10) -join ", "
+                            if ($skippedSelections.Count -gt 10) {
+                                $skippedDisplay += "`n...and $($skippedSelections.Count - 10) more. See the WinUtil log for details."
+                            }
+                            if ($sync.Form) {
+                                Show-WinUtilMessage -Message "Supported settings were imported. The following retired settings were skipped:`n`n$skippedDisplay" -Title "Legacy Configuration Partially Imported" -Icon "Warning" | Out-Null
+                            }
+                        }
+                    } else {
+                        # Build and validate every imported selection before replacing the current
+                        # state. This keeps a malformed config from leaving partial selections behind.
+                        Update-WinUtilSelections -flatJson $flattenedJson -Replace
+                    }
 
                     if ($sync.Form) {
                         Reset-WPFCheckBoxes -doToggles $true
@@ -7042,7 +7200,7 @@ function Invoke-WPFUIElements {
                         $toggleButton = New-Object Windows.Controls.Primitives.ToggleButton
                         $toggleButton.Name = $entryInfo.Name
                         $toggleButton.Content = $entryInfo.Content[1]
-                        $toggleButton.ToolTip = $entryInfo.Description
+                        $toggleButton.ToolTip = Get-WinUtilEntryToolTip -Description $entryInfo.Description -Key $entryInfo.Name
                         $toggleButton.HorizontalAlignment = "Left"
                         $toggleButton.Style = $ToggleButtonStyle
                         [System.Windows.Automation.AutomationProperties]::SetName($toggleButton, $entryInfo.Content[0])
@@ -7308,7 +7466,7 @@ function Invoke-WPFUIElements {
                         $checkBox.Name = $entryInfo.Name
                         $checkBox.Content = $entryInfo.Content
                         $checkBox.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "FontSize")
-                        $checkBox.ToolTip = $entryInfo.Description
+                        $checkBox.ToolTip = Get-WinUtilEntryToolTip -Description $entryInfo.Description -Key $entryInfo.Name
                         $checkBox.SetResourceReference([Windows.Controls.Control]::MarginProperty, "CheckBoxMargin")
                         $checkBox.UseLayoutRounding = $true
                         [System.Windows.Automation.AutomationProperties]::SetName($checkBox, $entryInfo.Content)
@@ -7916,6 +8074,15 @@ $sync.configs.applications = @'
     "winget": "AutoHotkey.AutoHotkey",
     "foss": true
   },
+  "WPFInstallbattlenet": {
+    "category": "遊戲",
+    "choco": "na",
+    "winget": "Blizzard.BattleNet",
+    "content": "Battle.net",
+    "description": "Battle.net is a launcher for games created and developed by Activision Blizzard",
+    "link": "https://battle.net",
+    "foss": false
+  },
   "WPFInstallbitwarden": {
     "category": "工具程式",
     "choco": "bitwarden",
@@ -7993,7 +8160,7 @@ $sync.configs.applications = @'
     "choco": "na",
     "content": "ChatGPT Desktop",
     "description": "官方的 ChatGPT Windows 桌面應用程式，透過 Microsoft Store 發行。",
-    "link": "https://apps.microsoft.com/detail/9nt1r1c2hh7j",
+    "link": "https://openai.com/chatgpt/download/",
     "winget": "msstore:9NT1R1C2HH7J",
     "foss": false
   },
@@ -8020,7 +8187,7 @@ $sync.configs.applications = @'
     "choco": "chromium",
     "content": "Chromium",
     "description": "Chromium 是作為多款網頁瀏覽器（包括 Chrome）基礎的開源專案。",
-    "link": "https://github.com/Hibbiki/chromium-win64",
+    "link": "https://www.chromium.org/",
     "winget": "Hibbiki.Chromium",
     "foss": true
   },
@@ -8146,7 +8313,7 @@ $sync.configs.applications = @'
     "choco": "dorion",
     "content": "Dorion",
     "description": "輕巧的替代 Discord 用戶端，佔用空間更小、啟動更迅速，並支援主題、外掛程式等更多功能！",
-    "link": "https://github.com/SpikeHD/Dorion",
+    "link": "https://spikehd.dev/projects/dorion/",
     "winget": "SpikeHD.Dorion",
     "foss": true
   },
@@ -8231,6 +8398,16 @@ $sync.configs.applications = @'
     "winget": "Microsoft.Edge",
     "foss": false
   },
+  "WPFInstalles-de": {
+    "category": "遊戲",
+    "choco": "",
+    "content": "EmulationStation Desktop Edition",
+    "_comment": "This and emulationstation are two completely different things. ES-DE is your frontend for everything and has its own set of emulators. Emulationstation is a graphical frontend for RetroArch.",
+    "description": "EmulationStation Desktop Edition is a frontend for browsing and launching games from your multi-platform game collection.",
+    "link": "https://es-de.org/",
+    "winget": "ES-DE.EmulationStation-DE",
+    "foss": true
+  },
   "WPFInstallenteauth": {
     "category": "工具程式",
     "choco": "ente-auth",
@@ -8254,7 +8431,7 @@ $sync.configs.applications = @'
     "choco": "files",
     "content": "Files",
     "description": "替代的檔案總管。",
-    "link": "https://github.com/files-community/Files",
+    "link": "https://files.community",
     "winget": "FilesCommunity.Files",
     "foss": true
   },
@@ -8425,7 +8602,7 @@ $sync.configs.applications = @'
     "choco": "helium",
     "content": "Helium",
     "description": "注重隱私、快速且誠實的網頁瀏覽器。",
-    "link": "https://github.com/imputnet/helium/",
+    "link": "https://helium.computer",
     "winget": "ImputNet.Helium",
     "foss": true
   },
@@ -8434,7 +8611,7 @@ $sync.configs.applications = @'
     "choco": "hugo-extended",
     "content": "Hugo",
     "description": "全世界最快的網站建置框架。",
-    "link": "https://github.com/gohugoio/hugo/",
+    "link": "https://gohugo.io",
     "winget": "Hugo.Hugo.Extended",
     "foss": true
   },
@@ -8551,7 +8728,7 @@ $sync.configs.applications = @'
     "choco": "jellyfin-media-player",
     "content": "Jellyfin Media Player",
     "description": "Jellyfin Media Player 是 Jellyfin 媒體伺服器的用戶端應用程式，可讓你存取自己的媒體庫。",
-    "link": "https://github.com/jellyfin/jellyfin-media-player",
+    "link": "https://jellyfin.org/",
     "winget": "Jellyfin.JellyfinMediaPlayer",
     "foss": true
   },
@@ -8641,7 +8818,7 @@ $sync.configs.applications = @'
     "choco": "librewolf",
     "content": "LibreWolf",
     "description": "LibreWolf 是一款以隱私為重的網頁瀏覽器，以 Firefox 為基礎，並加入額外的隱私與安全強化功能。",
-    "link": "https://librewolf-community.gitlab.io/",
+    "link": "https://librewolf.net/",
     "winget": "LibreWolf.LibreWolf",
     "foss": true
   },
@@ -8659,7 +8836,7 @@ $sync.configs.applications = @'
     "choco": "mediainfo",
     "content": "mpc-qt",
     "description": "Media Player Classic Qute Theater",
-    "link": "https://github.com/mpc-qt/mpc-qt",
+    "link": "https://mpc-qt.github.io",
     "winget": "mpc-qt.mpc-qt",
     "foss": true
   },
@@ -8712,7 +8889,7 @@ $sync.configs.applications = @'
     "choco": "mpc-hc-clsid2",
     "content": "Media Player Classic - Home Cinema",
     "description": "Media Player Classic - Home Cinema (MPC-HC) 是一款適用於 Windows 的免費開源影音播放器。MPC-HC 以原始的 Guliverkli 專案為基礎，並包含許多額外功能與錯誤修正。",
-    "link": "https://github.com/clsid2/mpc-hc/",
+    "link": "https://mpc-hc.org/",
     "winget": "clsid2.mpc-hc",
     "foss": true
   },
@@ -8739,7 +8916,7 @@ $sync.configs.applications = @'
     "choco": "mullvad-app",
     "content": "Mullvad VPN",
     "description": "這是 Mullvad VPN 服務的 VPN 用戶端軟體。",
-    "link": "https://github.com/mullvad/mullvadvpn-app",
+    "link": "https://mullvad.net/",
     "winget": "MullvadVPN.MullvadVPN",
     "foss": true
   },
@@ -8766,7 +8943,7 @@ $sync.configs.applications = @'
     "choco": "nanazip",
     "content": "NanaZip",
     "description": "NanaZip 是一款快速且高效率的檔案壓縮與解壓縮工具。",
-    "link": "https://github.com/M2Team/NanaZip",
+    "link": "https://nanazip.org",
     "winget": "M2Team.NanaZip",
     "foss": true
   },
@@ -8778,6 +8955,15 @@ $sync.configs.applications = @'
     "link": "https://netbird.io/",
     "winget": "Netbird.Netbird",
     "foss": true
+  },
+  "WPFInstalltailscale": {
+    "category": "工具程式",
+    "choco": "tailscale",
+    "content": "Tailscale",
+    "description": "The Tailscale client allows you to connect all your devices using WireGuard®, without the hassle. Tailscale makes it as easy as installing an app and signing in.",
+    "link": "https://tailscale.com/",
+    "winget": "Tailscale.Tailscale",
+    "foss": false
   },
   "WPFInstallnaps2": {
     "category": "Document",
@@ -9192,6 +9378,15 @@ $sync.configs.applications = @'
     "winget": "qBittorrent.qBittorrent",
     "foss": true
   },
+  "WPFInstallqownnotes": {
+    "category": "Document",
+    "choco": "qownnotes",
+    "content": "QOwnNotes",
+    "description": "QOwnNotes is a free open-source note taking app with Nextcloud/ownCloud integration.",
+    "link": "https://www.qownnotes.org/",
+    "winget": "pbek.QOwnNotes",
+    "foss": true
+  },
   "WPFInstallqtox": {
     "category": "通訊",
     "choco": "qtox",
@@ -9377,7 +9572,7 @@ $sync.configs.applications = @'
     "choco": "sunshine",
     "content": "Sunshine/GameStream Server",
     "description": "Sunshine 是 GameStream 伺服器，讓你在 Android 裝置上遠端遊玩 PC 遊戲，提供低延遲串流。",
-    "link": "https://github.com/LizardByte/Sunshine",
+    "link": "https://app.lizardbyte.dev/Sunshine/",
     "winget": "LizardByte.Sunshine",
     "foss": true
   },
@@ -9494,7 +9689,7 @@ $sync.configs.applications = @'
     "choco": "translucenttb",
     "content": "TranslucentTB",
     "description": "TranslucentTB 是一款可讓你自訂 Windows 工作列透明度的工具。",
-    "link": "https://github.com/TranslucentTB/TranslucentTB",
+    "link": "https://translucenttb.github.io",
     "winget": "CharlesMilette.TranslucentTB",
     "foss": true
   },
@@ -9575,7 +9770,7 @@ $sync.configs.applications = @'
     "choco": "na",
     "content": "Vesktop",
     "description": "一款以 electron 為基礎的跨平台桌面 App，預裝 Vencord，讓你享有更流暢的 Discord 體驗。",
-    "link": "https://github.com/Vencord/Vesktop",
+    "link": "https://vesktop.dev",
     "winget": "Vencord.Vesktop",
     "foss": true
   },
@@ -9665,7 +9860,7 @@ $sync.configs.applications = @'
     "choco": "na",
     "content": "WhatsApp Desktop",
     "description": "WhatsApp Desktop 是 Meta 官方的 Windows 桌面訊息應用程式，透過 Microsoft Store 發行。",
-    "link": "https://apps.microsoft.com/detail/9nksqgp7f2nh",
+    "link": "https://www.whatsapp.com/download",
     "winget": "msstore:9NKSQGP7F2NH",
     "foss": false
   },
@@ -9857,6 +10052,15 @@ $sync.configs.applications = @'
     "content": "Lua",
     "link": "https://github.com/rjpcomputing/luaforwindows",
     "foss": true
+  },
+  "WPFInstallCloudflareWARP": {
+    "category": "工具程式",
+    "choco": "warp",
+    "winget": "Cloudflare.Warp",
+    "description": "WARP is a freemium VPN service provided by Cloudflare. Includes usage of Cloudflare's DNS",
+    "content": "Cloudflare WARP",
+    "link": "https://one.one.one.one",
+    "foss": false
   }
 }
 '@ | ConvertFrom-Json
@@ -10981,7 +11185,7 @@ $sync.configs.tweaks = @'
     "service": [
       {
         "Name": "lfsvc",
-        "StartupType": "Disable",
+        "StartupType": "Disabled",
         "OriginalType": "Manual"
       }
     ],
@@ -11902,22 +12106,6 @@ $sync.configs.tweaks = @'
       }
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disablebgapps"
-  },
-  "WPFTweaksDisableFSO": {
-    "Content": "全螢幕最佳化 - 停用",
-    "Description": "停用所有應用程式的 FSO。注意：這會停用獨佔全螢幕模式下的色彩管理。",
-    "category": "z__進階調校 - 注意",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\System\\GameConfigStore",
-        "Name": "GameDVR_DXGIHonorFSEWindowsCompatible",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disablefso"
   },
   "WPFTweaksDisableExplorerAutoDiscovery": {
     "Content": "檔案總管自動資料夾探索 - 停用",
@@ -13675,7 +13863,8 @@ $inputXML = @'
                             Name="SearchBar"
                             Foreground="{DynamicResource MainForegroundColor}" Background="{DynamicResource MainBackgroundColor}"
                             Padding="3,3,30,0"
-                            ToolTip="按 Ctrl-F 並輸入軟體名稱以篩選下方清單，按 Esc 清除篩選">
+                            ToolTip="Press Ctrl-F and type app name to filter application list below. Press Esc to reset the filter"
+                            AutomationProperties.Name="Search">
                         </TextBox>
                         <TextBlock
                             Name="SearchBarIcon"
@@ -13691,6 +13880,7 @@ $inputXML = @'
                     VerticalAlignment="Center" HorizontalAlignment="Right"
                     Name="SearchBarClearButton"
                     Style="{StaticResource SearchBarClearButtonStyle}"
+                    AutomationProperties.Name="Clear Search"
                     Margin="0,0,20,0" Visibility="Collapsed">
                 </Button>
 
@@ -13708,6 +13898,7 @@ $inputXML = @'
                     FontFamily="Segoe MDL2 Assets"
                     Content="N/A"
                     ToolTip="變更 WinUtil 介面佈景主題"
+                    AutomationProperties.Name="Theme"
                 />
                     <Popup Name="ThemePopup"
                     IsOpen="False"
@@ -13746,6 +13937,7 @@ $inputXML = @'
                     FontFamily="Segoe MDL2 Assets"
                     Content="&#xE8D3;"
                     ToolTip="調整字型縮放（無障礙）"
+                    AutomationProperties.Name="Font Scaling"
                 />
                     <Popup Name="FontScalingPopup"
                     IsOpen="False"
@@ -13773,7 +13965,8 @@ $inputXML = @'
                                         TickPlacement="BottomRight"
                                         IsSnapToTickEnabled="True"
                                         Width="120"
-                                        VerticalAlignment="Center"/>
+                                        VerticalAlignment="Center"
+                                        AutomationProperties.Name="Font Scaling"/>
                                 <TextBlock Text="大"
                                            FontSize="{DynamicResource ButtonFontSize}"
                                            Foreground="{DynamicResource MainForegroundColor}"
