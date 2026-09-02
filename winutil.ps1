@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.09.01
+    Version        : 26.09.02
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.09.01"
+$sync.version = "26.09.02"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -124,7 +124,7 @@ function Add-SelectedAppsMenuItem {
     $selectedAppRemoveButton.Add_MouseEnter({ $this.Foreground = "Red" })
     $selectedAppRemoveButton.Add_MouseLeave({ $this.SetResourceReference([Windows.Controls.Control]::ForegroundProperty, "MainForegroundColor") })
     $selectedAppRemoveButton.Add_Click({
-            $sync.($this.Tag).isChecked = $false # On click of the remove button, we only have to uncheck the corresponding checkbox. This will kick of all necessary changes to update the UI
+            $sync.($this.Tag).isChecked = $false # On click of the remove button, we only have to uncheck the corresponding checkbox. This will kick off all necessary changes to update the UI
     })
     [System.Windows.Controls.Grid]::SetColumn($selectedAppRemoveButton, 1)
     $selectedAppGrid.Children.Add($selectedAppRemoveButton)
@@ -905,7 +905,7 @@ function Get-WinUtilVariables {
             .SYNOPSIS
                 Creates a [Windows.Controls.ScrollViewer] containing a [Windows.Controls.ItemsControl] which is setup to use Virtualization to only load the visible elements for performance reasons.
                 This is used as the parent object for all category and app entries on the install tab
-                Used to as part of the Install Tab UI generation
+                Used as part of the Install Tab UI generation
 
             .PARAMETER TargetElement
                 The element to which the AppArea should be added
@@ -915,7 +915,7 @@ function Get-WinUtilVariables {
         $targetGrid = $sync.Form.FindName($TargetElement)
         $null = $targetGrid.Children.Clear()
 
-        # Create the outer Border for the aren where the apps will be placed
+        # Create the outer Border for the area where the apps will be placed
         $Border = New-Object Windows.Controls.Border
         $Border.VerticalAlignment = "Stretch"
         $Border.SetResourceReference([Windows.Controls.Control]::StyleProperty, "BorderStyle")
@@ -2250,12 +2250,17 @@ function Invoke-WinUtilISOModify {
             $selectedEditionId = Get-WinUtilEditionIdFromName -EditionName $selectedEditionName
 
             Log "Writing autounattend.xml and edition selection..."
-            Invoke-WinUtilISOScript -ISOContentsDir $isoContents -AutoUnattendXml $autounattendContent -InjectCurrentSystemDrivers $injectDrivers -InstallImagePath $localWim -InstallImageIndex $selectedWimIndex -InstallEditionId $selectedEditionId -Log { param($m) Log $m }
+            $driversInjected = [ref]$false
+            Invoke-WinUtilISOScript -ISOContentsDir $isoContents -AutoUnattendXml $autounattendContent -InjectCurrentSystemDrivers $injectDrivers -InstallImagePath $localWim -InstallImageIndex $selectedWimIndex -InstallEditionId $selectedEditionId -Log { param($m) Log $m } -DriversInjected $driversInjected
 
-            SetProgress "Preserving install image..." 70
-            if ($injectDrivers) {
+            if ($driversInjected.Value) {
+                SetProgress "Finalizing install image..." 70
                 Log "Added current-system drivers to $sourceImageFileName index $selectedWimIndex with one mount and commit."
+            } elseif ($injectDrivers) {
+                SetProgress "Preserving install image..." 70
+                Log "No current-system drivers were injected into $sourceImageFileName index $selectedWimIndex; install.wim was left unchanged. Review the warning log entries for details."
             } else {
+                SetProgress "Preserving install image..." 70
                 Log "Preserved the original $sourceImageFileName without mounting, exporting, or modifying it."
             }
 
@@ -2704,6 +2709,10 @@ function Invoke-WinUtilISOScript {
 
     .PARAMETER Log
         Optional ScriptBlock for progress/status logging. Receives a single [string] argument.
+
+    .PARAMETER DriversInjected
+        Optional [ref] set to $true only if driver injection actually mounted and committed
+        install.wim; stays $false if injection was skipped or no package was added successfully.
     #>
     param (
         [Parameter(Mandatory)][string]$ISOContentsDir,
@@ -2712,7 +2721,8 @@ function Invoke-WinUtilISOScript {
         [string]$InstallEditionId = "",
         [string]$InstallImagePath = "",
         [int]$InstallImageIndex = 1,
-        [scriptblock]$Log = { param($m) Write-Output $m }
+        [scriptblock]$Log = { param($m) Write-Output $m },
+        [ref]$DriversInjected = [ref]$false
     )
 
     function Add-WinUtilISOStagedDrivers {
@@ -2720,8 +2730,10 @@ function Invoke-WinUtilISOScript {
             [Parameter(Mandatory)][string]$ContentRoot,
             [Parameter(Mandatory)][string]$InstallImagePath,
             [Parameter(Mandatory)][int]$InstallImageIndex,
-            [scriptblock]$Logger
+            [scriptblock]$Logger,
+            [ref]$DriversInjected = [ref]$false
         )
+        $DriversInjected.Value = $false
 
         function Copy-WinUtilISODriverFolder {
             param (
@@ -2754,6 +2766,148 @@ function Invoke-WinUtilISOScript {
                 & $Logger "Warning: could not classify storage driver '$($InfFile.FullName)': $_"
                 return $false
             }
+        }
+
+        function Test-WinUtilISODriverExtensionClass {
+            param ([Parameter(Mandatory)][System.IO.FileInfo]$InfFile)
+
+            try {
+                return (Get-Content -LiteralPath $InfFile.FullName -Raw -ErrorAction Stop) -match '(?im)^\s*Class\s*=\s*"?Extension"?\s*(?:;.*)?$'
+            } catch {
+                $null = & $Logger "Warning: could not classify driver '$($InfFile.FullName)': $_"
+                return $false
+            }
+        }
+
+        function Get-WinUtilISODriverPackageVersion {
+            param ([Parameter(Mandatory)][System.IO.FileInfo]$InfFile)
+
+            try {
+                $infText = Get-Content -LiteralPath $InfFile.FullName -Raw -ErrorAction Stop
+            } catch {
+                $null = & $Logger "Warning: could not read '$($InfFile.FullName)' to determine its driver version: $_"
+                return $null
+            }
+
+            # The version component of DriverVer is optional per the INF spec (date-only entries
+            # are valid); treat a missing version as 0.0 so date-only entries still rank correctly
+            # instead of being discarded as unparseable.
+            $match = [regex]::Match($infText, '(?im)^\s*DriverVer\s*=\s*(?<date>\d{1,2}/\d{1,2}/\d{4})\s*(?:,\s*(?<version>\d+(?:\.\d+){0,3}))?\s*(?:;.*)?$')
+            if (-not $match.Success) {
+                return $null
+            }
+
+            try {
+                $date = [datetime]::ParseExact($match.Groups['date'].Value, 'M/d/yyyy', [System.Globalization.CultureInfo]::InvariantCulture)
+                $versionText = if ($match.Groups['version'].Success) { $match.Groups['version'].Value } else { '0' }
+                if (($versionText.Split('.')).Count -lt 2) {
+                    $versionText = "$versionText.0"
+                }
+                $version = [version]$versionText
+            } catch {
+                $null = & $Logger "Warning: could not parse DriverVer '$($match.Value.Trim())' in '$($InfFile.FullName)': $_"
+                return $null
+            }
+
+            return [pscustomobject]@{
+                Date    = $date
+                Version = $version
+                Raw     = if ($match.Groups['version'].Success) { "$($match.Groups['date'].Value),$($match.Groups['version'].Value)" } else { $match.Groups['date'].Value }
+            }
+        }
+
+        function Get-WinUtilISODriverProvider {
+            param ([Parameter(Mandatory)][System.IO.FileInfo]$InfFile)
+
+            try {
+                $infText = Get-Content -LiteralPath $InfFile.FullName -Raw -ErrorAction Stop
+            } catch {
+                $null = & $Logger "Warning: could not read '$($InfFile.FullName)' to determine its provider: $_"
+                return ''
+            }
+
+            $match = [regex]::Match($infText, '(?im)^\s*Provider\s*=\s*(?<provider>.+?)\s*(?:;.*)?$')
+            if (-not $match.Success) {
+                return ''
+            }
+            return $match.Groups['provider'].Value.ToLowerInvariant()
+        }
+
+        function Select-WinUtilISOStagedDriverPackages {
+            param (
+                [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$DriverFolderGroups,
+                [scriptblock]$Logger
+            )
+
+            $survivingFolders = [System.Collections.Generic.List[string]]::new()
+            $dedupGroups = @{}
+
+            foreach ($driverFolderGroup in $DriverFolderGroups) {
+                $driverFolder = [string]$driverFolderGroup.Name
+                $isExtension = [bool]@($driverFolderGroup.Group | Where-Object { Test-WinUtilISODriverExtensionClass -InfFile $_ }).Count
+
+                if ($isExtension) {
+                    # $null = discards $Logger's own output; this function's return value is captured
+                    # by the caller, and an emitting logger (e.g. this function's own default) would
+                    # otherwise leak into the surviving-folder list.
+                    $null = & $Logger "Excluding extension-class driver package '$driverFolder' from Add-Driver (Class=Extension is not a serviceable hardware driver)."
+                    continue
+                }
+
+                # DISM names exported package folders <infname>_<arch>_<hash>; grouping on infname+arch
+                # (dropping the hash) is what lets us recognize two exports of the same driver. When a
+                # folder doesn't match that pattern, fall back to the full path rather than the leaf name:
+                # two unrelated folders at different depths (e.g. group_a\duplicate and group_b\duplicate)
+                # can share a leaf name, and the full path is guaranteed unique per group.
+                $leafName = Split-Path -Path $driverFolder -Leaf
+                $dedupKey = $driverFolder
+                $nameMatch = [regex]::Match($leafName, '(?i)^(?<infname>.+)_(?<arch>x86|amd64|arm64|arm|wow)_[0-9a-f]{16}$')
+                if ($nameMatch.Success) {
+                    $provider = Get-WinUtilISODriverProvider -InfFile $driverFolderGroup.Group[0]
+                    $dedupKey = "$($nameMatch.Groups['infname'].Value.ToLowerInvariant())_$($nameMatch.Groups['arch'].Value.ToLowerInvariant())_$provider"
+                }
+
+                if (-not $dedupGroups.ContainsKey($dedupKey)) {
+                    $dedupGroups[$dedupKey] = [System.Collections.Generic.List[object]]::new()
+                }
+                $dedupGroups[$dedupKey].Add($driverFolderGroup)
+            }
+
+            foreach ($dedupKey in $dedupGroups.Keys) {
+                $candidates = $dedupGroups[$dedupKey]
+                if ($candidates.Count -eq 1) {
+                    $survivingFolders.Add([string]$candidates[0].Name)
+                    continue
+                }
+
+                $ranked = @($candidates | ForEach-Object {
+                    $primaryVersion = ($_.Group | ForEach-Object { Get-WinUtilISODriverPackageVersion -InfFile $_ } | Where-Object { $_ }) |
+                        Sort-Object -Property Date, Version -Descending | Select-Object -First 1
+                    [pscustomobject]@{ Folder = [string]$_.Name; Version = $primaryVersion }
+                })
+
+                $withVersion = @($ranked | Where-Object { $_.Version })
+                if ($withVersion.Count -eq 0) {
+                    $null = & $Logger "Warning: could not determine DriverVer for any duplicate of '$dedupKey'; keeping all $($ranked.Count) package(s) rather than guessing."
+                    foreach ($candidate in $ranked) {
+                        $survivingFolders.Add($candidate.Folder)
+                    }
+                    continue
+                }
+
+                $kept = $withVersion | Sort-Object -Property @{ Expression = { $_.Version.Date } }, @{ Expression = { $_.Version.Version } } -Descending | Select-Object -First 1
+                $survivingFolders.Add($kept.Folder)
+
+                foreach ($candidate in $ranked) {
+                    if ($candidate.Folder -eq $kept.Folder) {
+                        continue
+                    }
+                    $droppedVersion = if ($candidate.Version) { $candidate.Version.Raw } else { 'unknown' }
+                    $null = & $Logger "Excluding stale duplicate driver package '$($candidate.Folder)' (DriverVer $droppedVersion) superseded by '$($kept.Folder)' (DriverVer $($kept.Version.Raw))."
+                }
+            }
+
+            return @($survivingFolders)
         }
 
         function Invoke-WinUtilISODism {
@@ -2830,17 +2984,18 @@ function Invoke-WinUtilISOScript {
         $driverExportRoot = Join-Path $env:TEMP "WinUtil_DriverExport_$(Get-Date -Format 'yyyyMMdd_HHmmss')_$(([guid]::NewGuid()).ToString('N').Substring(0, 8))"
         $mountDir = Join-Path (Split-Path -Path $ContentRoot -Parent) 'wim_mount'
         New-Item -Path $driverExportRoot -ItemType Directory -Force | Out-Null
+
+        # %TEMP% can be an 8.3 alias, but Get-ChildItem below reports long paths, so the
+        # exported folders would not share this prefix unless it is expanded first.
+        $driverExportRoot = (Get-Item -LiteralPath $driverExportRoot).FullName
         $imageMounted = $false
 
         try {
             & $Logger "Exporting current system drivers before modifying install.wim..."
             $dismLog = Join-Path $env:TEMP "WinUtil_DismDriverExport_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-            $dismProcess = Start-Process -FilePath "dism.exe" -ArgumentList "/online /export-driver /destination:`"$driverExportRoot`" /LogPath:`"$dismLog`"" -Wait -NoNewWindow -PassThru
-            if ($dismProcess.ExitCode -ne 0) {
-                throw "dism.exe driver export failed with exit code $($dismProcess.ExitCode)."
-            }
+            Invoke-WinUtilISODism -Arguments @('/English', '/Online', '/Export-Driver', "/Destination:$driverExportRoot", "/LogPath:$dismLog") -Operation 'export-driver' | Out-Null
 
-            $driverInfs = @(Get-ChildItem -Path $driverExportRoot -Filter '*.inf' -Recurse -File)
+            $driverInfs = @(Get-ChildItem -LiteralPath $driverExportRoot -Filter '*.inf' -Recurse -File)
             if ($driverInfs.Count -eq 0) {
                 throw 'DISM exported no driver INF files.'
             }
@@ -2871,26 +3026,108 @@ function Invoke-WinUtilISOScript {
                 throw "Failed to stage $copyFailures boot-storage driver package folders."
             }
 
-            & $Logger "Exported $($driverInfs.Count) driver INF files across $($driverFolders.Count) package folders; staged $storageCount boot-storage packages for WinPE."
+            $stagedDriverFolders = @(Select-WinUtilISOStagedDriverPackages -DriverFolderGroups $driverFolders -Logger $Logger)
             $metadataBefore = Get-WinUtilISOWimMetadata -ImagePath $InstallImagePath -Index $InstallImageIndex
             Assert-WinUtilISOWimMetadata -Before $metadataBefore
 
-            Set-ItemProperty -LiteralPath $InstallImagePath -Name IsReadOnly -Value $false
-            New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
-            & $Logger "Mounting install.wim index $InstallImageIndex once for driver injection..."
-            Invoke-WinUtilISODism -Arguments @('/English', '/Mount-Image', "/ImageFile:$InstallImagePath", "/Index:$InstallImageIndex", "/MountDir:$mountDir") -Operation 'mount' | Out-Null
-            $imageMounted = $true
+            if ($stagedDriverFolders.Count -eq 0) {
+                # Nothing safe to inject (e.g. every exported package was an Extension-class add-on)
+                # isn't a failure: leave install.wim untouched and continue building the ISO.
+                & $Logger 'No drivers found to inject: every exported package was excluded (Extension class or stale duplicate). Skipping driver injection; install.wim is unchanged.'
+            } else {
+                $excludedDriverFolderGroups = @($driverFolders | Where-Object { $_.Name -notin $stagedDriverFolders })
+                foreach ($excludedDriverFolderGroup in $excludedDriverFolderGroups) {
+                    $excludedFolder = [string]$excludedDriverFolderGroup.Name
+                    $hasRetainedDescendant = [bool]@($stagedDriverFolders | Where-Object {
+                        $_.StartsWith("$excludedFolder\", [System.StringComparison]::OrdinalIgnoreCase)
+                    }).Count
+                    if ($hasRetainedDescendant) {
+                        try {
+                            foreach ($excludedInf in $excludedDriverFolderGroup.Group) {
+                                Remove-Item -LiteralPath $excludedInf.FullName -Force -ErrorAction Stop
+                            }
+                        } catch {
+                            throw "Failed to remove excluded driver INF files from package '$excludedFolder' before injection: $_"
+                        }
 
-            & $Logger "Adding all exported drivers to the selected Windows image in one DISM operation..."
-            Invoke-WinUtilISODism -Arguments @('/English', "/Image:$mountDir", '/Add-Driver', "/Driver:$driverExportRoot", '/Recurse') -Operation 'add-driver' | Out-Null
+                        & $Logger "Keeping excluded driver package directory '$excludedFolder' because it contains a retained nested package, after removing its excluded INF files."
+                        continue
+                    }
 
-            & $Logger 'Committing the driver-only install.wim change...'
-            Invoke-WinUtilISODism -Arguments @('/English', '/Unmount-Image', "/MountDir:$mountDir", '/Commit') -Operation 'commit' | Out-Null
-            $imageMounted = $false
+                    try {
+                        Remove-Item -LiteralPath $excludedFolder -Recurse -Force -ErrorAction Stop
+                    } catch {
+                        throw "Failed to remove excluded driver package '$excludedFolder' before injection: $_"
+                    }
+                }
 
-            $metadataAfter = Get-WinUtilISOWimMetadata -ImagePath $InstallImagePath -Index $InstallImageIndex
-            Assert-WinUtilISOWimMetadata -Before $metadataBefore -After $metadataAfter
-            & $Logger 'Driver injection complete; install.wim metadata validation passed.'
+                & $Logger "Exported $($stagedDriverFolders.Count) of $($driverFolders.Count) driver packages ($storageCount staged for WinPE, $($excludedDriverFolderGroups.Count) excluded)."
+
+                Set-ItemProperty -LiteralPath $InstallImagePath -Name IsReadOnly -Value $false
+                New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
+
+                # Add each package separately so one bad driver cannot fail the rest. Because
+                # /Recurse covers descendants, only the highest surviving folder in each tree
+                # needs its own DISM call.
+                $rootPackageFolders = @($stagedDriverFolders | Where-Object {
+                    $candidate = $_
+                    -not ($stagedDriverFolders | Where-Object { $candidate.StartsWith("$_\", [System.StringComparison]::OrdinalIgnoreCase) })
+                })
+
+                & $Logger "Adding $($rootPackageFolders.Count) root driver packages to install.wim."
+                $remainingDriverFolders = @($rootPackageFolders)
+                while ($remainingDriverFolders.Count -gt 0) {
+                    & $Logger "Mounting install.wim index $InstallImageIndex for driver injection..."
+                    Invoke-WinUtilISODism -Arguments @('/English', '/Mount-Image', "/ImageFile:$InstallImagePath", "/Index:$InstallImageIndex", "/MountDir:$mountDir") -Operation 'mount' | Out-Null
+                    $imageMounted = $true
+
+                    $failedDriverFolder = $null
+                    foreach ($driverFolder in $remainingDriverFolders) {
+                        $driverName = $driverFolder
+                        if ($driverFolder.StartsWith($driverExportRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $driverName = $driverFolder.Substring($driverExportRoot.Length).TrimStart('\')
+                        }
+
+                        try {
+                            Invoke-WinUtilISODism -Arguments @('/English', "/Image:$mountDir", '/Add-Driver', "/Driver:$driverFolder", '/Recurse') -Operation "add-driver:$driverName" | Out-Null
+                        } catch {
+                            & $Logger "Warning: failed to add driver package '$driverName': $_"
+                            $failedDriverFolder = $driverFolder
+                            break
+                        }
+                    }
+
+                    if (-not $failedDriverFolder) {
+                        break
+                    }
+
+                    & $Logger "Discarding the potentially partial install.wim mount before continuing without '$driverName'."
+                    try {
+                        Invoke-WinUtilISODism -Arguments @('/English', '/Unmount-Image', "/MountDir:$mountDir", '/Discard') -Operation 'discard' | Out-Null
+                        $imageMounted = $false
+                    } catch {
+                        throw "Failed to discard the potentially partial install.wim mount after driver package '$driverName' failed: $_"
+                    }
+
+                    $remainingDriverFolders = @($remainingDriverFolders | Where-Object { $_ -ne $failedDriverFolder })
+                }
+
+                $addedCount = $remainingDriverFolders.Count
+                if ($addedCount -eq 0) {
+                    # Boot-storage drivers staged for WinPE remain available to Windows Setup.
+                    & $Logger "Warning: none of the $($rootPackageFolders.Count) exported driver packages could be added; continuing with an unmodified install.wim."
+                } else {
+                    & $Logger "Added $addedCount of $($rootPackageFolders.Count) driver packages to install.wim."
+                    & $Logger 'Committing the driver-only install.wim change...'
+                    Invoke-WinUtilISODism -Arguments @('/English', '/Unmount-Image', "/MountDir:$mountDir", '/Commit') -Operation 'commit' | Out-Null
+                    $imageMounted = $false
+
+                    $metadataAfter = Get-WinUtilISOWimMetadata -ImagePath $InstallImagePath -Index $InstallImageIndex
+                    Assert-WinUtilISOWimMetadata -Before $metadataBefore -After $metadataAfter
+                    & $Logger 'Driver injection complete; install.wim metadata validation passed.'
+                    $DriversInjected.Value = $true
+                }
+            }
         } finally {
             if ($imageMounted -or (Test-WinUtilISOMountedImage -Path $mountDir)) {
                 try {
@@ -2899,8 +3136,8 @@ function Invoke-WinUtilISOScript {
                     & $Logger "Warning: could not discard the failed install.wim mount: $_"
                 }
             }
-            Remove-Item -Path $mountDir -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item -Path $driverExportRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $mountDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $driverExportRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -3214,7 +3451,7 @@ $appxList
     Write-WinUtilISOEditionConfig -ContentRoot $ISOContentsDir -EditionId $InstallEditionId -Logger $Log
 
     if ($InjectCurrentSystemDrivers) {
-        Add-WinUtilISOStagedDrivers -ContentRoot $ISOContentsDir -Logger $Log -InstallImagePath $InstallImagePath -InstallImageIndex $InstallImageIndex
+        Add-WinUtilISOStagedDrivers -ContentRoot $ISOContentsDir -Logger $Log -InstallImagePath $InstallImagePath -InstallImageIndex $InstallImageIndex -DriversInjected $DriversInjected
     }
 }
 
@@ -4070,7 +4307,7 @@ function Reset-WPFCheckBoxes {
     <#
 
     .SYNOPSIS
-        Set winutil checkboxs to match $sync.selected values.
+        Set WinUtil checkboxes to match $sync.selected values.
         Should only need to be run if $sync.selected updated outside of UI (i.e. presets or import)
 
     .PARAMETER doToggles
@@ -7544,7 +7781,7 @@ function Invoke-WPFUIThread ($ScriptBlock) {
 function Invoke-WPFUltimatePerformance ([switch]$Enable) {
     if ($Enable) {
         powercfg /setactive (powercfg /duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 | Select-String -Pattern '[A-Fa-f0-9-]{36}').Matches.Value
-        [System.Windows.MessageBox]::Show("已安裝並啟用「極致效能」電源計劃。","成功","OK","Information")
+        [System.Windows.MessageBox]::Show("Ultimate Power Plan installed and activated.","Success","OK","Information")
     } else {
         powercfg /restoredefaultschemes
         [System.Windows.MessageBox]::Show("電源計劃已重設為預設值。","成功","OK","Information")
@@ -8433,6 +8670,15 @@ $sync.configs.applications = @'
     "description": "替代的檔案總管。",
     "link": "https://files.community",
     "winget": "FilesCommunity.Files",
+    "foss": true
+  },
+  "WPFInstallfileconverter": {
+    "category": "多媒體工具",
+    "choco": "file-converter",
+    "content": "File Converter",
+    "description": "File Converter converts and compresses files from the Windows Explorer context menu.",
+    "link": "https://file-converter.io/",
+    "winget": "AdrienAllard.FileConverter",
     "foss": true
   },
   "WPFInstallfirefox": {
@@ -9382,7 +9628,7 @@ $sync.configs.applications = @'
     "category": "Document",
     "choco": "qownnotes",
     "content": "QOwnNotes",
-    "description": "QOwnNotes is a free open-source note taking app with Nextcloud/ownCloud integration.",
+    "description": "QOwnNotes is a free open-source note-taking app with Nextcloud/ownCloud integration.",
     "link": "https://www.qownnotes.org/",
     "winget": "pbek.QOwnNotes",
     "foss": true
@@ -9769,7 +10015,7 @@ $sync.configs.applications = @'
     "category": "通訊",
     "choco": "na",
     "content": "Vesktop",
-    "description": "一款以 electron 為基礎的跨平台桌面 App，預裝 Vencord，讓你享有更流暢的 Discord 體驗。",
+    "description": "A cross-platform electron-based desktop app aiming to give you a snappier Discord experience with Vencord pre-installed.",
     "link": "https://vesktop.dev",
     "winget": "Vencord.Vesktop",
     "foss": true
@@ -11170,10 +11416,10 @@ $sync.configs.tweaks = @'
     "category": "必要調校",
     "panel": "1",
     "InvokeScript": [
-      "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /deny Everyone:F"
+      "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /deny *S-1-1-0:F"
     ],
     "UndoScript": [
-      "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /grant Everyone:F"
+      "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /grant *S-1-1-0:F"
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/disablestoresearch"
   },
@@ -11674,7 +11920,7 @@ $sync.configs.tweaks = @'
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "InvokeScript": [
-      "\n      # Deny permission to remove OneDrive folder\n      icacls $Env:OneDrive /deny \"Administrators:(D,DC)\"\n\n      Write-Host \"Uninstalling OneDrive...\"\n      Start-Process -FilePath (Join-Path $Env:SystemRoot \"System32\\OneDriveSetup.exe\") -ArgumentList '/uninstall' -Wait\n\n      # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\n      Write-Host \"Removing leftover OneDrive Files...\"\n\n      Stop-Process -Name FileCoAuth,Explorer\n\n      Remove-Item \"$Env:LocalAppData\\Microsoft\\OneDrive\" -Recurse -Force\n      Remove-Item \"$Env:ProgramData\\Microsoft OneDrive\" -Recurse -Force\n\n      # Grant back permission to access OneDrive folder\n      icacls $Env:OneDrive /grant \"Administrators:(D,DC)\"\n\n      if (-not (Get-ChildItem -Path $Env:OneDrive)) {\n          Remove-Item -Path $Env:OneDrive -Recurse\n          [Environment]::SetEnvironmentVariable('OneDrive', $null, 'User')\n      }\n\n      # Disable OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Disabled\n      "
+      "\n      # Deny permission to remove OneDrive folder\n      icacls $Env:OneDrive /deny \"*S-1-5-32-544:(D,DC)\"\n\n      Write-Host \"Uninstalling OneDrive...\"\n      Start-Process -FilePath (Join-Path $Env:SystemRoot \"System32\\OneDriveSetup.exe\") -ArgumentList '/uninstall' -Wait\n\n      # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\n      Write-Host \"Removing leftover OneDrive Files...\"\n\n      Stop-Process -Name FileCoAuth,Explorer\n\n      Remove-Item \"$Env:LocalAppData\\Microsoft\\OneDrive\" -Recurse -Force\n      Remove-Item \"$Env:ProgramData\\Microsoft OneDrive\" -Recurse -Force\n\n      # Grant back permission to access OneDrive folder\n      icacls $Env:OneDrive /grant \"*S-1-5-32-544:(D,DC)\"\n\n      if (-not (Get-ChildItem -Path $Env:OneDrive)) {\n          Remove-Item -Path $Env:OneDrive -Recurse\n          [Environment]::SetEnvironmentVariable('OneDrive', $null, 'User')\n      }\n\n      # Disable OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Disabled\n      "
     ],
     "UndoScript": [
       "\n      Write-Host \"Installing OneDrive\"\n      winget install Microsoft.Onedrive --source winget\n\n      # Enabled OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Automatic\n      "
@@ -11845,7 +12091,7 @@ $sync.configs.tweaks = @'
   },
   "WPFTweaksEndTaskOnTaskbar": {
     "Content": "以右鍵結束工作 - 啟用",
-    "Description": "啟用在工具列上以右鍵點擊程式時結束工作的選項。",
+    "Description": "Enables option to end task when right-clicking a program in the taskbar.",
     "category": "必要調校",
     "panel": "1",
     "registry": [
@@ -11955,12 +12201,25 @@ $sync.configs.tweaks = @'
       }
     ],
     "InvokeScript": [
-      "\n      $RazerPath = \"$Env:SystemRoot\\Installer\\Razer\"\n\n      if (Test-Path $RazerPath) {\n        Remove-Item $RazerPath\\* -Recurse -Force\n      } else {\n        New-Item -Path $RazerPath -ItemType Directory\n      }\n\n      icacls $RazerPath /deny \"Everyone:(W)\"\n      "
+      "\n      $RazerPath = \"$Env:SystemRoot\\Installer\\Razer\"\n\n      if (Test-Path $RazerPath) {\n        Remove-Item $RazerPath\\* -Recurse -Force\n      } else {\n        New-Item -Path $RazerPath -ItemType Directory\n      }\n\n      icacls $RazerPath /deny \"*S-1-1-0:(W)\"\n      "
     ],
     "UndoScript": [
-      "\n      icacls \"$Env:SystemRoot\\Installer\\Razer\" /remove:d Everyone\n      "
+      "\n      icacls \"$Env:SystemRoot\\Installer\\Razer\" /remove:d *S-1-1-0\n      "
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/razerblock"
+  },
+  "WPFTweaksLogiBlock": {
+    "Content": "Logitech Download Assistant Auto-Install - Disable",
+    "Description": "Blocks the Logi Download Assistant that Windows Update keeps reinstalling with Logitech device drivers. Logitech hardware keeps working without it.",
+    "category": "z__進階調校 - 注意",
+    "panel": "1",
+    "InvokeScript": [
+      "\n      Stop-Process -Name \"logi_download_assistant\" -Force -ErrorAction SilentlyContinue\n\n      $ProgramFiles64 = if ($Env:ProgramW6432) { $Env:ProgramW6432 } else { $Env:ProgramFiles }\n      $LogiPath = \"$ProgramFiles64\\LogiDownloadAssistant\"\n\n      if (Test-Path $LogiPath) {\n        Remove-Item $LogiPath\\* -Recurse -Force\n      } else {\n        New-Item -Path $LogiPath -ItemType Directory\n      }\n\n      icacls $LogiPath /deny \"*S-1-1-0:(W)\"\n      if ($LASTEXITCODE -ne 0) { throw \"icacls failed to deny write access on $LogiPath (exit code $LASTEXITCODE)\" }\n      "
+    ],
+    "UndoScript": [
+      "\n      $ProgramFiles64 = if ($Env:ProgramW6432) { $Env:ProgramW6432 } else { $Env:ProgramFiles }\n      $LogiPath = \"$ProgramFiles64\\LogiDownloadAssistant\"\n\n      if (Test-Path $LogiPath) {\n        icacls $LogiPath /remove:d \"*S-1-1-0\"\n        if ($LASTEXITCODE -ne 0) { throw \"icacls failed to remove the write-deny rule on $LogiPath (exit code $LASTEXITCODE)\" }\n      }\n      "
+    ],
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/logiblock"
   },
   "WPFTweaksDisableNotifications": {
     "Content": "系統匣通知與行事曆 - 停用",
@@ -12264,7 +12523,7 @@ $sync.configs.tweaks = @'
   },
   "WPFToggleNewOutlook": {
     "Content": "Microsoft Outlook 新版",
-    "Description": "這會確保使用傳統版的 Outlook 應用程式。",
+    "Description": "This will ensure the new Outlook application is used.",
     "category": "自訂偏好設定",
     "panel": "2",
     "Type": "Toggle",
@@ -15262,7 +15521,7 @@ $sync.preferences.packagemanager = "Winget"
 if ($Preset) {
     Initialize-WinUtilRunspacePool | Out-Null
 
-    # Selects the tweaks from $Preset varible
+    # Selects the tweaks from $Preset variable
     Update-WinUtilSelections -flatJson $sync.configs.preset.$Preset
 
     # Run tweaks that were selected by Update-WinUtilSelections
@@ -15293,7 +15552,7 @@ if ($Config) {
 [xml]$XAML = $inputXML
 
 # Read the XAML file
-$readerOperationSuccessful = $false # There's more cases of failure then success.
+$readerOperationSuccessful = $false # There are more cases of failure than success.
 $reader = (New-Object System.Xml.XmlNodeReader $xaml)
 try {
     $sync["Form"] = [Windows.Markup.XamlReader]::Load( $reader )
@@ -15317,7 +15576,7 @@ if (-NOT ($readerOperationSuccessful)) {
     exit 1
 }
 
-# Setup the Window to follow listen for windows Theme Change events and update the winutil theme
+# Setup the Window to listen for Windows Theme Change events and update the WinUtil theme
 # throttle logic needed, because windows seems to send more than one theme change event per change
 $lastThemeChangeTime = [datetime]::MinValue
 $debounceInterval = [timespan]::FromSeconds(2)
@@ -15544,7 +15803,7 @@ $sync["Form"].Add_ContentRendered({
 })
 
 # The SearchBarTimer is used to delay the search operation until the user has stopped typing for a short period
-# This prevents the ui from stuttering when the user types quickly as it dosnt need to update the ui for every keystroke
+# This prevents the ui from stuttering when the user types quickly as it doesn't need to update the ui for every keystroke
 
 $searchBarTimer = New-Object System.Windows.Threading.DispatcherTimer
 $searchBarTimer.Interval = [TimeSpan]::FromMilliseconds(300)
