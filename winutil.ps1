@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.09.02
+    Version        : 26.09.03
 #>
 
 param (
@@ -57,7 +57,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.09.02"
+$sync.version = "26.09.03"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -656,6 +656,145 @@ function Get-WinUtilEntryToolTip {
     return "$Description`n`nPreset key: $Key"
 }
 
+function Get-WinUtilEnvironmentReport {
+    <#
+    .SYNOPSIS
+        Collects the allowlisted data used by the WinUtil environment report.
+    #>
+
+    $windows = [ordered]@{
+        edition      = $null
+        version      = $null
+        buildNumber  = $null
+        architecture = $null
+    }
+    $hardware = [ordered]@{
+        cpuModel              = $null
+        logicalProcessorCount = $null
+        totalMemoryGB         = $null
+    }
+
+    try {
+        $operatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        $windows.edition = $operatingSystem.Caption
+        $windows.version = $operatingSystem.Version
+        $windows.buildNumber = $operatingSystem.BuildNumber
+        $windows.architecture = $operatingSystem.OSArchitecture
+
+        if ($null -ne $operatingSystem.TotalVisibleMemorySize) {
+            $hardware.totalMemoryGB = [math]::Round(([double]$operatingSystem.TotalVisibleMemorySize / 1MB), 2)
+        }
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to collect Windows/memory info from Win32_OperatingSystem: $($_.Exception.Message)"
+    }
+
+    try {
+        $processors = @(Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop)
+        if ($processors.Count -gt 0) {
+            $hardware.cpuModel = $processors[0].Name
+            $hardware.logicalProcessorCount = [int](($processors | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum)
+        }
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to collect CPU info from Win32_Processor: $($_.Exception.Message)"
+    }
+
+    $powershell = [ordered]@{
+        edition         = $PSVersionTable.PSEdition
+        version         = $PSVersionTable.PSVersion.ToString()
+        executionPolicy = $null
+    }
+
+    try {
+        $powershell.executionPolicy = (Get-ExecutionPolicy).ToString()
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to read PowerShell execution policy: $($_.Exception.Message)"
+    }
+
+    # Re-use built-in functionality
+    $chocolatey = [ordered]@{ installed = $false; version = $null }
+    try {
+        $chocolatey.installed = (Test-WinUtilPackageManager -choco 6>$null) -eq "installed"
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to check Chocolatey availability: $($_.Exception.Message)"
+    }
+
+    if ($chocolatey.installed) {
+        try {
+            $chocolatey.version = (choco -v 2>&1 | Select-Object -First 1).ToString().Trim()
+        } catch {
+            Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to read Chocolatey version: $($_.Exception.Message)"
+        }
+    }
+
+    $winget = [ordered]@{ installed = $false; version = $null }
+    try {
+        $winget.installed = (Test-WinUtilPackageManager -winget 6>$null) -eq "installed"
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to check WinGet availability: $($_.Exception.Message)"
+    }
+
+    if ($winget.installed) {
+        try {
+            $winget.version = (winget -v 2>&1 | Select-Object -First 1).ToString().Trim()
+        } catch {
+            Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to read WinGet version: $($_.Exception.Message)"
+        }
+    }
+
+    $system = [ordered]@{ pendingRebootRequired = $false }
+    try {
+        $rebootPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"
+        )
+
+        # A present-but-empty PendingFileRenameOperations value still returns a non-null object, so
+        # check the actual entries rather than just whether the property exists.
+        $pendingFileRenameOperations = @(
+            (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" `
+                -Name "PendingFileRenameOperations" -ErrorAction SilentlyContinue).PendingFileRenameOperations |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+        )
+        $system.pendingRebootRequired = ($rebootPaths | Where-Object { Test-Path $_ }).Count -gt 0 -or
+            $pendingFileRenameOperations.Count -gt 0
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to check pending-reboot registry state: $($_.Exception.Message)"
+    }
+
+    $tweaksState = Get-WinUtilTweaksStateReport
+
+    return [pscustomobject][ordered]@{
+        schemaVersion    = "1.0"
+        generatedAtUtc   = [DateTime]::UtcNow.ToString("o")
+        windows          = [pscustomobject]$windows
+        hardware         = [pscustomobject]$hardware
+        powershell       = [pscustomobject]$powershell
+        packageManagers  = [pscustomobject][ordered]@{
+            winget     = [pscustomobject]$winget
+            chocolatey = [pscustomobject]$chocolatey
+        }
+        system           = [pscustomobject]$system
+        tweaksState      = $tweaksState
+    }
+}
+
+function Get-WinUtilEnvironmentReportLogsPath {
+    <#
+    .SYNOPSIS
+        Derives the companion logs .txt path from the environment report's JSON save path.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$JsonPath
+    )
+
+    # ChangeExtension($JsonPath, $null) leaves a trailing dot instead of stripping it, so build the
+    # name from its parts instead.
+    $directory = [System.IO.Path]::GetDirectoryName($JsonPath)
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($JsonPath)
+    return [System.IO.Path]::Combine($directory, "${baseName}_logs.txt")
+}
+
 function Get-WinUtilInstalledAPPX {
     <#
 
@@ -708,6 +847,46 @@ function Get-WinUtilPackageLogSummary {
             "$packageName (no package id)"
         }
     })
+}
+
+function Get-WinUtilRecentLogs {
+    <#
+    .SYNOPSIS
+        Concatenates WinUtil session logs from the last N days into a single text blob.
+
+    .PARAMETER Days
+        How many days back to include. Defaults to 7, matching what the support forum/server
+        typically asks users for.
+
+    .PARAMETER LogDirectory
+        Overrides the log directory (normally $sync.winutildir\logs). Mainly for testing.
+    #>
+    param(
+        [int]$Days = 7,
+        [string]$LogDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
+        if ($null -eq $sync -or -not $sync.ContainsKey("winutildir") -or [string]::IsNullOrWhiteSpace($sync.winutildir)) {
+            return ""
+        }
+        $LogDirectory = Join-Path $sync.winutildir "logs"
+    }
+
+    if (-not (Test-Path $LogDirectory)) {
+        return ""
+    }
+
+    $cutoff = (Get-Date).AddDays(-$Days)
+    $logFiles = Get-ChildItem -Path $LogDirectory -Filter "winutil_*.log" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $cutoff } |
+        Sort-Object LastWriteTime
+
+    $sections = foreach ($logFile in $logFiles) {
+        "=== $($logFile.Name) ===`n$(Get-Content -Path $logFile.FullName -Raw)"
+    }
+
+    return ($sections -join "`n`n")
 }
 
 function Get-WinUtilRegistryComboState {
@@ -828,26 +1007,35 @@ function Get-WinUtilSelectedPackages {
     return $packages
 }
 
-Function Get-WinUtilToggleStatus ($ToggleSwitch) {
+Function Get-WinUtilToggleStatus {
+    param(
+        $ToggleSwitch,
+        [switch]$BypassCache,
+        [switch]$StopOnReadError
+    )
 
     $ToggleSwitchReg = $sync.configs.tweaks.$ToggleSwitch.registry
 
-    if ($null -eq $sync.ToggleStatusCache) {
-        $sync.ToggleStatusCache = @{}
+    if (-not $BypassCache) {
+        if ($null -eq $sync.ToggleStatusCache) {
+            $sync.ToggleStatusCache = @{}
+        }
+
+        if ($sync.ToggleStatusCache.ContainsKey($ToggleSwitch)) {
+            return [bool]$sync.ToggleStatusCache[$ToggleSwitch]
+        }
     }
 
-    if ($sync.ToggleStatusCache.ContainsKey($ToggleSwitch)) {
-        return [bool]$sync.ToggleStatusCache[$ToggleSwitch]
-    }
+    $readErrorAction = if ($StopOnReadError) { "Stop" } else { "Continue" }
 
     if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
-        New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS | Out-Null
+        New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS -ErrorAction $readErrorAction | Out-Null
     }
 
     foreach ($regentry in $ToggleSwitchReg) {
 
-        if (Test-Path $regentry.Path) {
-            $regstate = (Get-ItemProperty -Path $regentry.Path).$($regentry.Name)
+        if (Test-Path $regentry.Path -ErrorAction $readErrorAction) {
+            $regstate = (Get-ItemProperty -Path $regentry.Path -ErrorAction $readErrorAction).$($regentry.Name)
         } else {
             $regstate = $null
         }
@@ -860,13 +1048,80 @@ Function Get-WinUtilToggleStatus ($ToggleSwitch) {
         }
 
         if ($regstate -ne $regentry.Value) {
-            $sync.ToggleStatusCache[$ToggleSwitch] = $false
+            if (-not $BypassCache) {
+                $sync.ToggleStatusCache[$ToggleSwitch] = $false
+            }
             return $false
         }
     }
 
-    $sync.ToggleStatusCache[$ToggleSwitch] = $true
+    if (-not $BypassCache) {
+        $sync.ToggleStatusCache[$ToggleSwitch] = $true
+    }
     return $true
+}
+
+function Get-WinUtilTweaksStateReport {
+    <#
+    .SYNOPSIS
+        Groups every config/tweaks.json entry's live applied state by category, reusing the same
+        detection Invoke-WPFGetInstalled uses to check the "Get Installed Tweaks" checkboxes.
+    #>
+
+    $categoryFieldNames = [ordered]@{
+        "Essential Tweaks"                    = "essentialTweaks"
+        "Customize Preferences"               = "customizePreferences"
+        "z__Advanced Tweaks - CAUTION"         = "advancedTweaks"
+        "Performance Plans - NOT FOR LAPTOPS" = "performancePlans"
+    }
+
+    $grouped = [ordered]@{}
+    foreach ($fieldName in $categoryFieldNames.Values) {
+        $grouped[$fieldName] = [ordered]@{}
+    }
+    $notEvaluable = [System.Collections.Generic.List[string]]::new()
+    $collectionStatus = "collected"
+
+    try {
+        $appliedTweaks = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]@(Invoke-WinUtilCurrentSystem -CheckBox "tweaks" `
+                -BypassToggleStatusCache -StopOnReadError)
+        )
+
+        foreach ($property in $sync.configs.tweaks.PSObject.Properties) {
+            $tweakKey = $property.Name
+            $entry = $property.Value
+            $fieldName = $categoryFieldNames[[string]$entry.category]
+
+            # Buttons embedded in the tweaks panel (e.g. the OOSU/Ultimate Performance launchers)
+            # are actions, not stateful tweaks, so they're outside this report's scope entirely.
+            if (-not $fieldName -or $entry.Type -eq "Button") {
+                continue
+            }
+
+            # Combobox tweaks and script-only tweaks with no registry/service schema have no
+            # detectable current state. List them so the report doesn't silently drop them.
+            if ($entry.Type -eq "Combobox" -or (-not $entry.registry -and -not $entry.service)) {
+                $notEvaluable.Add($tweakKey)
+                continue
+            }
+
+            $grouped[$fieldName][$tweakKey] = $appliedTweaks.Contains($tweakKey)
+        }
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "WARN" -Message "Failed to collect tweaks/toggle state: $($_.Exception.Message)"
+        $collectionStatus = "unavailable"
+    }
+
+    # Empty groups from a failed collection would otherwise be indistinguishable in the JSON from a
+    # successful scan that found nothing notable, so record whether collection actually ran.
+    $result = [ordered]@{ collectionStatus = $collectionStatus }
+    foreach ($fieldName in $categoryFieldNames.Values) {
+        $result[$fieldName] = [pscustomobject]$grouped[$fieldName]
+    }
+    $result.notEvaluable = @($notEvaluable)
+
+    return [pscustomobject]$result
 }
 
 function Get-WinUtilVariables {
@@ -1690,7 +1945,9 @@ Function Invoke-WinUtilCurrentSystem {
     #>
 
     param(
-        $CheckBox
+        $CheckBox,
+        [switch]$BypassToggleStatusCache,
+        [switch]$StopOnReadError
     )
     if ($CheckBox -eq "choco") {
         $apps = (choco list | Select-String -Pattern "^\S+").Matches.Value
@@ -1731,6 +1988,7 @@ Function Invoke-WinUtilCurrentSystem {
     if ($CheckBox -eq "tweaks") {
 
         if (!(Test-Path 'HKU:\')) {$null = (New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS)}
+        $readErrorAction = if ($StopOnReadError) { "Stop" } else { "SilentlyContinue" }
 
         $sync.configs.tweaks | Get-Member -MemberType NoteProperty | ForEach-Object {
 
@@ -1744,7 +2002,9 @@ Function Invoke-WinUtilCurrentSystem {
                 $Values = @()
 
                 if ($entryType -eq "Toggle") {
-                    if (-not (Get-WinUtilToggleStatus $Config)) {
+                    if (-not (Get-WinUtilToggleStatus $Config `
+                        -BypassCache:$BypassToggleStatusCache `
+                        -StopOnReadError:$StopOnReadError)) {
                         $values += $False
                     }
                 } else {
@@ -1756,8 +2016,12 @@ Function Invoke-WinUtilCurrentSystem {
                             $registryTotal++
                             $regstate = $null
 
-                            if (Test-Path $tweak.Path) {
-                                $regstate = Get-ItemProperty -Name $tweak.Name -Path $tweak.Path -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $($tweak.Name)
+                            if (Test-Path $tweak.Path -ErrorAction $readErrorAction) {
+                                if ($StopOnReadError) {
+                                    $regstate = (Get-ItemProperty -Path $tweak.Path -ErrorAction Stop).$($tweak.Name)
+                                } else {
+                                    $regstate = Get-ItemProperty -Name $tweak.Name -Path $tweak.Path -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $($tweak.Name)
+                                }
                             }
 
                             if ($null -eq $regstate) {
@@ -5967,6 +6231,94 @@ function Invoke-WPFButton {
             }
         }
         "WPFselectedAppsButton" {$sync.selectedAppsPopup.IsOpen = -not $sync.selectedAppsPopup.IsOpen}
+    }
+}
+
+function Invoke-WPFExportEnvironmentReport {
+    <#
+    .SYNOPSIS
+        Exports an allowlisted, read-only environment report as JSON, with an optional bundle of
+        recent WinUtil logs.
+    #>
+
+    try {
+        $includeLogs = [System.Windows.MessageBox]::Show(
+            $sync.Form,
+            "Also include the last 7 days of WinUtil logs? This can help maintainers troubleshoot an issue.",
+            "Environment Report", "YesNo", "Question") -eq "Yes"
+
+        Add-Type -AssemblyName System.Windows.Forms
+        $dialog = [System.Windows.Forms.SaveFileDialog]::new()
+        $dialog.Title = "Export Environment Report"
+        $dialog.Filter = "JSON files (*.json)|*.json"
+        $dialog.FileName = "WinUtilEnvironmentReport_$(Get-Date -Format 'yyyyMMdd').json"
+        $dialog.InitialDirectory = [Environment]::GetFolderPath("Desktop")
+
+        if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+            return
+        }
+
+        $jsonPath = $dialog.FileName
+        $logsPath = Get-WinUtilEnvironmentReportLogsPath -JsonPath $jsonPath
+
+        # SaveFileDialog's own overwrite prompt only covers $jsonPath. $logsPath is derived and never
+        # shown to the user, so a same-day re-export would otherwise silently replace it.
+        if ($includeLogs -and (Test-Path $logsPath)) {
+            $includeLogs = [System.Windows.MessageBox]::Show(
+                $sync.Form,
+                "A logs file already exists at:`n$logsPath`n`nReplace it?",
+                "Environment Report", "YesNo", "Warning") -eq "Yes"
+        }
+
+        Write-WinUtilLog -Component "EnvironmentReport" -Message "Environment report export started."
+        Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Exporting environment report..." -Percent 0
+
+        # Registry reads across every tweak/toggle and the log bundle's file read add up to a
+        # couple of seconds. This handler runs directly on the WPF dispatcher thread (wired from
+        # the Settings menu), so the collection and write happen in a background runspace to avoid
+        # freezing the window.
+        Invoke-WPFRunspace -ParameterList @(("JsonPath", $jsonPath), ("LogsPath", $logsPath), ("IncludeLogs", $includeLogs)) -ScriptBlock {
+            param($JsonPath, $LogsPath, $IncludeLogs)
+
+            try {
+                $report = Get-WinUtilEnvironmentReport
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Writing environment report..." -Percent 60
+                $json = $report | ConvertTo-Json -Depth 6
+                [System.IO.File]::WriteAllText($JsonPath, $json, [System.Text.UTF8Encoding]::new($false))
+
+                if ($IncludeLogs) {
+                    $logs = Get-WinUtilRecentLogs
+                    [System.IO.File]::WriteAllText($LogsPath, $logs, [System.Text.UTF8Encoding]::new($false))
+                }
+
+                Write-WinUtilLog -Component "EnvironmentReport" -Message "Environment report exported to $JsonPath."
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Environment export completed" -Percent 100
+                Invoke-WPFUIThread { Set-WinUtilTaskbaritem -state "None" -overlay "checkmark" }
+            } catch {
+                # No MessageBox here: it would hop through Invoke-WPFUIThread/Dispatcher.Invoke from
+                # this background thread, the combination that can stall/freeze the UI.
+                # The progress label, taskbar overlay, and log line carry the failure instead.
+                Write-WinUtilLog -Component "EnvironmentReport" -Level "ERROR" -Message "Environment report export failed: $($_.Exception.Message)"
+                Set-WinUtilTweaksProgressIndicator -Visible $true -Label "Environment export failed: $($_.Exception.Message)" -Percent 100
+                Invoke-WPFUIThread { Set-WinUtilTaskbaritem -state "Error" -overlay "warning" }
+            }
+
+            # This is wired from a Settings-menu item, not a feature.json Button, so it never
+            # benefits from Invoke-WPFButton's implicit "clear the progress indicator on the next
+            # click" reset. Hide it explicitly instead, after a brief pause so the completed/failed
+            # label is actually visible.
+            Start-Sleep -Seconds 3
+            Set-WinUtilTweaksProgressIndicator -Visible $false
+        } | Out-Null
+    } catch {
+        Write-WinUtilLog -Component "EnvironmentReport" -Level "ERROR" -Message "Environment report export failed: $($_.Exception.Message)"
+        [System.Windows.MessageBox]::Show(
+            $sync.Form,
+            "The environment report could not be exported. $($_.Exception.Message)",
+            "Environment Report",
+            "OK",
+            "None"
+        ) | Out-Null
     }
 }
 
@@ -10657,6 +11009,14 @@ $sync.configs.appx = @'
     "Description": "內建 Klondike、Spider、FreeCell、Pyramid 與 TriPeaks 等紙牌遊戲模式，並附有每日挑戰。",
     "Panel": "1",
     "PackageId": "Microsoft.MicrosoftSolitaireCollection"
+  },
+  "WPFAppxMicrosoft_ZuneVideo": {
+    "Category": "工具程式與生產力",
+    "Content": "Movies & TV",
+    "Description": "The default video player and storefront for purchasing or renting media.",
+    "Panel": "0",
+    "PackageId": "Microsoft.ZuneVideo",
+    "StoreId": "9WZDNCRFJ3P2"
   }
 }
 '@ | ConvertFrom-Json
@@ -11327,14 +11687,14 @@ $sync.configs.tweaks = @'
 {
   "WPFTweaksActivity": {
     "Content": "活動歷程記錄 - 停用",
-    "Description": "清除最近的文件、剪貼簿與執行歷程記錄。",
+    "Description": "Stops Windows from publishing or uploading user activities while preserving clipboard history.",
     "category": "必要調校",
     "panel": "1",
     "registry": [
       {
         "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
         "Name": "EnableActivityFeed",
-        "Value": "0",
+        "Value": "1",
         "Type": "DWord",
         "OriginalValue": "<RemoveEntry>"
       },
@@ -14284,6 +14644,12 @@ $inputXML = @'
                                 </MenuItem.ToolTip>
                             </MenuItem>
                             <Separator/>
+                            <MenuItem FontSize="{DynamicResource ButtonFontSize}" Header="Export Environment Report" Name="ExportEnvironmentReportMenuItem" Foreground="{DynamicResource MainForegroundColor}">
+                                <MenuItem.ToolTip>
+                                    <ToolTip Content="Export a read-only diagnostics report for troubleshooting."/>
+                                </MenuItem.ToolTip>
+                            </MenuItem>
+                            <Separator/>
                             <MenuItem FontSize="{DynamicResource ButtonFontSize}" Header="關於" Name="AboutMenuItem" Foreground="{DynamicResource MainForegroundColor}"/>
                             <MenuItem FontSize="{DynamicResource ButtonFontSize}" Header="說明文件" Name="DocumentationMenuItem" Foreground="{DynamicResource MainForegroundColor}"/>
                             <MenuItem FontSize="{DynamicResource ButtonFontSize}" Header="贊助者" Name="SponsorMenuItem" Foreground="{DynamicResource MainForegroundColor}"/>
@@ -15914,6 +16280,10 @@ $sync["ImportMenuItem"].Add_Click({
 $sync["ExportMenuItem"].Add_Click({
     Invoke-WPFPopup -Action "Hide" -Popups @("Settings")
     Invoke-WPFImpex -type "export"
+})
+$sync["ExportEnvironmentReportMenuItem"].Add_Click({
+    Invoke-WPFPopup -Action "Hide" -Popups @("Settings")
+    Invoke-WPFExportEnvironmentReport
 })
 $sync["AboutMenuItem"].Add_Click({
     Invoke-WPFPopup -Action "Hide" -Popups @("Settings")
