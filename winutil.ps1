@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.09.06
+    Version        : 26.09.07
 #>
 
 param (
@@ -224,7 +224,8 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.09.06"
+$sync.version = "26.09.07"
+$sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -5019,7 +5020,7 @@ function Invoke-WinUtilSSHServer {
     if ($null -eq $firewallRule) {
         New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
         Write-Host "Firewall rule for OpenSSH Server created and enabled."
-    } elseif (-not $firewallRule.Enabled) {
+    } elseif ([int]$firewallRule.Enabled -eq 2) {
         Set-NetFirewallRule -Name 'sshd' -Enabled True
         Write-Host "Firewall rule for OpenSSH Server enabled."
     }
@@ -5401,13 +5402,15 @@ function Measure-WinUtilStep {
         [string]$Scope = "WinUtil"
     )
 
+    $isUIDiagnostic = $Scope -in @("UI", "Tab")
+    $captureTiming = -not $isUIDiagnostic -or $sync.IsLocalCompile
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         & $ScriptBlock
     } finally {
         $stopwatch.Stop()
 
-        if ($null -ne $sync.StepTimings) {
+        if ($captureTiming -and $null -ne $sync.StepTimings) {
             $null = $sync.StepTimings.Add([pscustomobject]@{
                 Scope = $Scope
                 Step = $Name
@@ -5415,7 +5418,10 @@ function Measure-WinUtilStep {
             })
         }
 
-        Write-WinUtilLog -Component $Scope -Message "timing: $Name took $($stopwatch.ElapsedMilliseconds) ms"
+        if ($captureTiming) {
+            $level = if ($isUIDiagnostic) { "DEBUG" } else { "INFO" }
+            Write-WinUtilLog -Level $level -Component $Scope -Message "timing: $Name took $($stopwatch.ElapsedMilliseconds) ms"
+        }
     }
 }
 
@@ -5445,7 +5451,8 @@ function Write-WinUtilTimingSummary {
         [int]$StartIndex = 0
     )
 
-    if ($null -eq $sync.StepTimings) {
+    $isUIDiagnostic = $Scope -in @("UI", "Tab")
+    if (($isUIDiagnostic -and -not $sync.IsLocalCompile) -or $null -eq $sync.StepTimings) {
         return
     }
 
@@ -5464,10 +5471,11 @@ function Write-WinUtilTimingSummary {
     $measured = ($steps | Measure-Object -Property Milliseconds -Sum).Sum
     $total = if ($TotalMilliseconds -ge 0) { $TotalMilliseconds } else { $measured }
 
-    Write-WinUtilLog -Component $Scope -Message "timing summary: $($steps.Count) step(s), $measured ms measured of $total ms total"
+    $level = if ($isUIDiagnostic) { "DEBUG" } else { "INFO" }
+    Write-WinUtilLog -Level $level -Component $Scope -Message "timing summary: $($steps.Count) step(s), $measured ms measured of $total ms total"
     foreach ($step in ($steps | Sort-Object Milliseconds -Descending | Select-Object -First $Top)) {
         $share = if ($total -gt 0) { [int](($step.Milliseconds / $total) * 100) } else { 0 }
-        Write-WinUtilLog -Component $Scope -Message "timing summary:   $($step.Milliseconds) ms ($share%)  $($step.Step)"
+        Write-WinUtilLog -Level $level -Component $Scope -Message "timing summary:   $($step.Milliseconds) ms ($share%)  $($step.Step)"
     }
 }
 
@@ -7836,14 +7844,14 @@ Version  : <a href="https://github.com/ChrisTitusTech/winutil/releases/tag/$($sy
     })
 
     $buildClock.Stop()
-    Write-WinUtilLog -Component "UI" -Message "Interface built in $($buildClock.ElapsedMilliseconds) ms, showing the window."
+    Write-WinUtilLog -Level "DEBUG" -Component "UI" -Message "Interface built in $($buildClock.ElapsedMilliseconds) ms, showing the window."
     Write-WinUtilTimingSummary -Scope "UI" -TotalMilliseconds $buildClock.ElapsedMilliseconds
 
     # Input priority runs behind everything already queued, so this fires at the first moment
     # the window could actually service a click
     $sync["Form"].Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input, [action]{
         $sinceStart = [int]((Get-Date) - $sync.StartedAt).TotalMilliseconds
-        Write-WinUtilLog -Component "UI" -Message "timing: interface ready for input $sinceStart ms after start."
+        Write-WinUtilLog -Level "DEBUG" -Component "UI" -Message "timing: interface ready for input $sinceStart ms after start."
     }) | Out-Null
 
     $sync["Form"].ShowDialog() | Out-Null
@@ -8724,6 +8732,12 @@ function Write-WinUtilLog {
         # Continuation of an error already counted, such as a stack frame
         [switch]$Detail
     )
+
+    # UI performance diagnostics are useful to developers but are too noisy for the release
+    # transcript. Compile.ps1 stamps local builds so DEBUG output cannot leak into CI artifacts.
+    if ($Level -eq "DEBUG" -and ($null -eq $sync -or -not $sync.IsLocalCompile)) {
+        return
+    }
 
     if ($Level -eq "ERROR" -and -not $Detail -and $null -ne $sync.LoggedErrors) {
         $null = $sync.LoggedErrors.Add("[$Component] $Message")
