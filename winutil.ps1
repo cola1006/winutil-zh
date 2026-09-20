@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.09.19
+    Version        : 26.09.20
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.09.19"
+$sync.version = "26.09.20"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -1061,6 +1061,91 @@ function Get-WinUtilAppEntryHandlers {
     }
 
     return $script:WinUtilAppEntryHandlers
+}
+
+function Get-WinUtilDNSBenchmark {
+    <#
+
+    .SYNOPSIS
+        Benchmarks neutral DNS providers by measuring TCP port 53 latency (RTT in ms) to determine the fastest DNS server.
+
+    .PARAMETER TimeoutMs
+        Maximum timeout in milliseconds for each connection test. Default is 1500ms.
+
+    .OUTPUTS
+        Array of PSCustomObjects containing Provider, PrimaryIP, and LatencyMs sorted by lowest latency.
+
+    .EXAMPLE
+        $results = Get-WinUtilDNSBenchmark
+        $fastest = $results[0]
+
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateRange(1, 9998)]
+        [int]$TimeoutMs = 1500
+    )
+
+    Write-WinUtilLog -Component "DNS" -Message "Starting DNS latency benchmark scan (TCP port 53)..."
+
+    $dnsConfigs = $sync.configs.dns
+    if ($null -eq $dnsConfigs) {
+        Write-Warning "DNS configurations not found in `$sync.configs.dns."
+        Write-WinUtilLog -Level "ERROR" -Component "DNS" -Message "DNS configurations not found in `$sync.configs.dns."
+        return @()
+    }
+
+    $results = [System.Collections.Generic.List[PSObject]]::new()
+
+    foreach ($prop in $dnsConfigs.PSObject.Properties) {
+        $providerName = $prop.Name
+        $primaryIp = $prop.Value.Primary
+        if (-not $primaryIp) { continue }
+
+        # Providers must explicitly opt in so new filtering services are never auto-selected.
+        if ($prop.Value.BenchmarkEligible -ne $true) {
+            continue
+        }
+
+        $latency = 9999
+        $client = $null
+        try {
+            $client = New-Object System.Net.Sockets.TcpClient
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $asyncResult = $client.BeginConnect($primaryIp, 53, $null, $null)
+            $success = $asyncResult.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+            $stopwatch.Stop()
+
+            if ($success) {
+                $client.EndConnect($asyncResult)
+                $latency = [int]$stopwatch.ElapsedMilliseconds
+            } else {
+                $latency = 9999
+            }
+        } catch {
+            $latency = 9999
+        } finally {
+            if ($null -ne $client) {
+                $client.Dispose()
+            }
+        }
+
+        $results.Add([PSCustomObject]@{
+            Provider  = $providerName
+            PrimaryIP = $primaryIp
+            LatencyMs = $latency
+        })
+    }
+
+    $sortedResults = @($results | Sort-Object LatencyMs)
+    if ($sortedResults.Count -gt 0 -and $sortedResults[0].LatencyMs -lt 9999) {
+        $fastest = $sortedResults[0]
+        Write-WinUtilLog -Component "DNS" -Message "DNS Benchmark completed. Fastest neutral provider: $($fastest.Provider) ($($fastest.LatencyMs) ms)"
+    } else {
+        Write-WinUtilLog -Component "DNS" -Message "DNS Benchmark completed. Could not determine latency for providers."
+    }
+
+    return $sortedResults
 }
 
 function Get-WinUtilEntryToolTip {
@@ -3060,6 +3145,8 @@ function Invoke-WinUtilFontScaling {
         "FontSize",
         "ButtonFontSize",
         "HeaderFontSize",
+        "Win11StepTitleFontSize",
+        "Win11StepHeroFontSize",
         "TabButtonFontSize",
         "ConfigTabButtonFontSize",
         "IconFontSize",
@@ -3250,6 +3337,45 @@ function Write-WinUtilISOLog {
     }
 }
 
+function Set-WinUtilISOStep {
+    <#
+        .SYNOPSIS
+            Selects a page of the Win11 Creator wizard and sets which pages can be navigated back to
+
+        .PARAMETER Step
+            Select, Modify, Working or Output
+
+        .PARAMETER Label
+            Headline shown on the working page while a long operation runs
+
+        .PARAMETER Reverse
+            Spins the working page icon backwards
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet("Select", "Modify", "Working", "Output")]
+        [string]$Step,
+
+        [string]$Label,
+
+        [switch]$Reverse
+    )
+
+    Invoke-WPFUIThread -Parameters @{ Step = $Step; Label = $Label; Reverse = [bool]$Reverse } -ScriptBlock {
+        param($Step, $Label, $Reverse)
+
+        if ($Label) { $sync["WPFWin11ISOWorkingLabel"].Text = $Label }
+
+        $sync["WPFWin11ISOWorkingSpinner"].Tag = if ($Reverse) { "Reverse" } else { "Forward" }
+
+        $sync["WPFWin11ISOSelectSection"].IsEnabled = $Step -in @("Select", "Modify")
+        $sync["WPFWin11ISOModifySection"].IsEnabled = $Step -eq "Modify"
+        $sync["WPFWin11ISOOutputSection"].IsEnabled = $Step -eq "Output"
+
+        $sync["WPFWin11ISO$($Step)Section"].IsSelected = $true
+    }
+}
+
 function Get-WinUtilEditionIdFromName {
     <#
     .SYNOPSIS
@@ -3294,10 +3420,9 @@ function Invoke-WinUtilISOBrowse {
     $sync["WPFWin11ISOPath"].Text           = $isoPath
     $sync["WPFWin11ISOFileInfo"].Text       = "檔案大小: $fileSizeGB GB"
     $sync["WPFWin11ISOFileInfo"].Visibility = "Visible"
-    $sync["WPFWin11ISOMountSection"].Visibility       = "Visible"
     $sync["WPFWin11ISOVerifyResultPanel"].Visibility  = "Collapsed"
-    $sync["WPFWin11ISOModifySection"].Visibility      = "Collapsed"
-    $sync["WPFWin11ISOOutputSection"].Visibility      = "Collapsed"
+
+    Set-WinUtilISOStep -Step "Select"
 
     Write-WinUtilISOLog "ISO selected: $isoPath  ($fileSizeGB GB)"
 }
@@ -3320,17 +3445,32 @@ function Invoke-WinUtilISOMountAndVerify {
             $sync["WPFWin11ISOMountButton"].IsEnabled = $false
             $sync["WPFWin11ISOModifyButton"].IsEnabled = $false
             $sync["WPFWin11ISOVerifyResultPanel"].Visibility = "Collapsed"
-            $sync["WPFWin11ISOModifySection"].Visibility = "Collapsed"
         }
+        Set-WinUtilISOStep -Step "Working" -Label "Mounting and verifying the ISO"
 
         $verified = $false
         $mountedByThisRun = $false
-        $sync["Win11ISOImageInfo"] = $null
-        $sync["Win11ISODriveLetter"] = $null
-        $sync["Win11ISOWimPath"] = $null
-        $sync["Win11ISOImagePath"] = $null
 
         try {
+            $previous = $sync["Win11ISOImagePath"]
+            if ($previous -and $previous -ne $isoPath -and (Get-DiskImage -ImagePath $previous -ErrorAction SilentlyContinue).Attached) {
+                try {
+                    Dismount-DiskImage -ImagePath $previous -ErrorAction Stop
+                    Write-WinUtilISOLog "Dismounted the previously verified ISO: $previous"
+                } catch {
+                    Write-WinUtilISOLog -Level "ERROR" -Message "Could not dismount the previously verified ISO ${previous}: $_"
+                    Show-WinUtilMessage -Message "The previously verified ISO is still mounted and could not be dismounted:`n`n$previous`n`nDismount it yourself, then select an ISO again." -Title "Previous ISO Still Mounted" -Button "OK" -Icon "Error" | Out-Null
+                    $stillMounted = [System.InvalidOperationException]::new("Could not dismount the previously verified ISO $previous.")
+                    $stillMounted.Data["WinUtilErrorReported"] = $true
+                    throw $stillMounted
+                }
+            }
+
+            $sync["Win11ISOImageInfo"] = $null
+            $sync["Win11ISODriveLetter"] = $null
+            $sync["Win11ISOWimPath"] = $null
+            $sync["Win11ISOImagePath"] = $null
+
             Write-WinUtilISOLog "Mounting ISO: $isoPath"
             Step-WinUtilJob -Status "Mounting ISO..." -Percent 10
 
@@ -3393,7 +3533,8 @@ function Invoke-WinUtilISOMountAndVerify {
             } -ScriptBlock {
                 param($DriveLetter, $ImageFileName, $imageInfo)
 
-                $sync["WPFWin11ISOMountDriveLetter"].Text = "Mounted at: $DriveLetter   |   Image file: $ImageFileName"
+                $sync["WPFWin11ISOMountDriveLetter"].Text = $DriveLetter
+                $sync["WPFWin11ISOImageFile"].Text        = $ImageFileName
                 $sync["WPFWin11ISOEditionComboBox"].Items.Clear()
                 foreach ($img in $imageInfo) {
                     [void]$sync["WPFWin11ISOEditionComboBox"].Items.Add("$($img.ImageIndex): $($img.ImageName)")
@@ -3408,7 +3549,7 @@ function Invoke-WinUtilISOMountAndVerify {
                     $sync["WPFWin11ISOEditionComboBox"].SelectedIndex = if ($proIndex -ge 0) { $proIndex } else { 0 }
                 }
                 $sync["WPFWin11ISOVerifyResultPanel"].Visibility = "Visible"
-                $sync["WPFWin11ISOModifySection"].Visibility = "Visible"
+                Set-WinUtilISOStep -Step "Modify"
             }
 
             $verified = $true
@@ -3432,6 +3573,10 @@ function Invoke-WinUtilISOMountAndVerify {
                 $sync["WPFWin11ISOBrowseButton"].IsEnabled = $true
                 $sync["WPFWin11ISOMountButton"].IsEnabled = $true
                 $sync["WPFWin11ISOModifyButton"].IsEnabled = [bool]$Verified
+
+                if ($sync["WPFWin11ISOWorkingSection"].IsSelected) {
+                    Set-WinUtilISOStep -Step "Select"
+                }
             }
         }
     }
@@ -3443,7 +3588,7 @@ function Invoke-WinUtilISOModify {
     $wimPath     = $sync["Win11ISOWimPath"]
 
     if (-not $isoPath) {
-        Show-WinUtilMessage -Message "No verified ISO found. Please complete Steps 1 and 2 first." -Title "Not Ready" -Button "OK" -Icon "Warning" | Out-Null
+        Show-WinUtilMessage -Message "No verified ISO found. Please select and verify an ISO first." -Title "Not Ready" -Button "OK" -Icon "Warning" | Out-Null
         return
     }
 
@@ -3483,10 +3628,8 @@ function Invoke-WinUtilISOModify {
 
         Invoke-WPFUIThread -ScriptBlock {
             $sync["WPFWin11ISOModifyButton"].IsEnabled = $false
-            $sync["WPFWin11ISOSelectSection"].Visibility = "Collapsed"
-            $sync["WPFWin11ISOMountSection"].Visibility  = "Collapsed"
-            $sync["WPFWin11ISOModifySection"].Visibility = "Collapsed"
         }
+        Set-WinUtilISOStep -Step "Working" -Label "Modifying install.wim"
 
         $modified = $false
         try {
@@ -3548,11 +3691,9 @@ function Invoke-WinUtilISOModify {
             $sync["Win11ISOContentsDir"] = $isoContents
 
             Step-WinUtilJob -Status "Modification complete" -Percent 100
-            Write-WinUtilISOLog "install.wim modification complete. Choose an output option in Step 4."
+            Write-WinUtilISOLog "install.wim modification complete. Choose an output option in the last step."
 
-            Invoke-WPFUIThread -ScriptBlock {
-                $sync["WPFWin11ISOOutputSection"].Visibility = "Visible"
-            }
+            Set-WinUtilISOStep -Step "Output"
             $modified = $true
         } catch {
             Write-WinUtilISOLog -Level "ERROR" -Message "Modification failed: $_"
@@ -3590,10 +3731,9 @@ function Invoke-WinUtilISOModify {
                 param($Modified)
 
                 $sync["WPFWin11ISOModifyButton"].IsEnabled = [bool]$Modified
-                if ($sync["WPFWin11ISOOutputSection"].Visibility -ne "Visible") {
-                    $sync["WPFWin11ISOSelectSection"].Visibility = "Visible"
-                    $sync["WPFWin11ISOMountSection"].Visibility  = "Visible"
-                    $sync["WPFWin11ISOModifySection"].Visibility = if ($Modified) { "Visible" } else { "Collapsed" }
+
+                if ($sync["WPFWin11ISOWorkingSection"].IsSelected) {
+                    Set-WinUtilISOStep -Step "Select"
                 }
             }
         }
@@ -3629,24 +3769,21 @@ function Invoke-WinUtilISOCheckExistingWork {
     $sync["Win11ISOWorkDir"]     = $existingWorkDir.FullName
     $sync["Win11ISOContentsDir"] = $isoContents
 
-    $sync["WPFWin11ISOSelectSection"].Visibility = "Collapsed"
-    $sync["WPFWin11ISOMountSection"].Visibility  = "Collapsed"
-    $sync["WPFWin11ISOModifySection"].Visibility = "Collapsed"
-    $sync["WPFWin11ISOOutputSection"].Visibility = "Visible"
+    Set-WinUtilISOStep -Step "Output"
 
     $modified = $existingWorkDir.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
     Write-WinUtilISOLog "Existing working directory found: $($existingWorkDir.FullName)"
-    Write-WinUtilISOLog "Last modified: $modified - Skipping Steps 1-3 and resuming at Step 4."
-    Write-WinUtilISOLog "Click 'Clean & Reset' if you want to start over with a new ISO."
+    Write-WinUtilISOLog "Last modified: $modified - Skipping the earlier steps and resuming at the output step."
+    Write-WinUtilISOLog "Click 'Start Over' if you want to start over with a new ISO."
 
-    Show-WinUtilMessage -Message "A previous WinUtil ISO working directory was found:`n`n$($existingWorkDir.FullName)`n`n(Last modified: $modified)`n`nStep 4 (output options) has been restored so you can save the already-modified image.`n`nClick 'Clean & Reset' in Step 4 if you want to start over." -Title "Existing Work Found" -Button "OK" -Icon "Info" | Out-Null
+    Show-WinUtilMessage -Message "A previous WinUtil ISO working directory was found:`n`n$($existingWorkDir.FullName)`n`n(Last modified: $modified)`n`nThe output step has been restored so you can save the already-modified image.`n`nClick 'Start Over' there if you want to start over." -Title "Existing Work Found" -Button "OK" -Icon "Info" | Out-Null
 }
 
 function Invoke-WinUtilISOCleanAndReset {
     $workDir = $sync["Win11ISOWorkDir"]
 
     if ($workDir -and (Test-Path $workDir)) {
-        $confirm = Show-WinUtilMessage -Message "This will delete the temporary working directory:`n`n$workDir`n`nAnd reset the interface back to the start.`n`nContinue?" -Title "Clean & Reset" -Button "YesNo" -Icon "Warning"
+        $confirm = Show-WinUtilMessage -Message "This will delete the temporary working directory:`n`n$workDir`n`nAnd reset the interface back to the start.`n`nContinue?" -Title "Start Over" -Button "YesNo" -Icon "Warning"
         if ($confirm -ne "Yes") { return }
     }
 
@@ -3656,6 +3793,7 @@ function Invoke-WinUtilISOCleanAndReset {
         param($workDir)
 
         Invoke-WPFUIThread -ScriptBlock { $sync["WPFWin11ISOCleanResetButton"].IsEnabled = $false }
+        Set-WinUtilISOStep -Step "Working" -Label "Starting over" -Reverse
 
         try {
             if ($workDir) {
@@ -3730,19 +3868,23 @@ function Invoke-WinUtilISOCleanAndReset {
 
             Invoke-WPFUIThread -ScriptBlock {
                 $sync["WPFWin11ISOPath"].Text                    = "No ISO selected..."
-                $sync["WPFWin11ISOFileInfo"].Visibility          = "Collapsed"
+                $sync["WPFWin11ISOFileInfo"].Visibility          = "Hidden"
                 $sync["WPFWin11ISOVerifyResultPanel"].Visibility = "Collapsed"
                 $sync["WPFWin11ISOOptionUSB"].Visibility         = "Collapsed"
-                $sync["WPFWin11ISOOutputSection"].Visibility     = "Collapsed"
-                $sync["WPFWin11ISOModifySection"].Visibility     = "Collapsed"
-                $sync["WPFWin11ISOMountSection"].Visibility      = "Collapsed"
-                $sync["WPFWin11ISOSelectSection"].Visibility     = "Visible"
+                $sync["WPFWin11ISODonePanel"].Visibility         = "Collapsed"
                 $sync["WPFWin11ISOModifyButton"].IsEnabled       = $true
                 $sync["WPFWin11ISOStatusLog"].Text               = "Ready. Please select a Windows 11 ISO to begin."
+                Set-WinUtilISOStep -Step "Select"
             }
             Step-WinUtilJob -Hide
         } finally {
-            Invoke-WPFUIThread -ScriptBlock { $sync["WPFWin11ISOCleanResetButton"].IsEnabled = $true }
+            Invoke-WPFUIThread -ScriptBlock {
+                $sync["WPFWin11ISOCleanResetButton"].IsEnabled = $true
+
+                if ($sync["WPFWin11ISOWorkingSection"].IsSelected) {
+                    Set-WinUtilISOStep -Step "Select"
+                }
+            }
         }
     }
 }
@@ -3751,7 +3893,7 @@ function Invoke-WinUtilISOExport {
     $contentsDir = $sync["Win11ISOContentsDir"]
 
     if (-not $contentsDir -or -not (Test-Path $contentsDir)) {
-        Show-WinUtilMessage -Message "No modified ISO content found.  Please complete Steps 1-3 first." -Title "Not Ready" -Button "OK" -Icon "Warning" | Out-Null
+        Show-WinUtilMessage -Message "No modified ISO content found.  Please run the modification step first." -Title "Not Ready" -Button "OK" -Icon "Warning" | Out-Null
         return
     }
 
@@ -3772,10 +3914,12 @@ function Invoke-WinUtilISOExport {
         param($contentsDir, $outputISO)
 
         Invoke-WPFUIThread -ScriptBlock { $sync["WPFWin11ISOChooseISOButton"].IsEnabled = $false }
+        Set-WinUtilISOStep -Step "Working" -Label "Building the ISO file"
 
         try {
             $oscdimg = Get-WinUtilOscdimgPath
             if (-not $oscdimg) {
+                Set-WinUtilISOStep -Step "Output"
                 Show-WinUtilMessage -Message "oscdimg.exe could not be found or installed automatically.`n`nPlease install it manually:`n  winget install -e --id Microsoft.OSCDIMG`n`nOr install the Windows ADK from:`nhttps://learn.microsoft.com/windows-hardware/get-started/adk-install" -Title "oscdimg Not Found" -Button "OK" -Icon "Warning" | Out-Null
                 throw "oscdimg.exe could not be found or installed automatically."
             }
@@ -3834,14 +3978,29 @@ function Invoke-WinUtilISOExport {
 
             Step-WinUtilJob -Status "ISO exported" -Percent 100
             Write-WinUtilISOLog "ISO exported successfully: $outputISO"
+            Invoke-WPFUIThread -Parameters @{ OutputISO = $outputISO } -ScriptBlock {
+                param($OutputISO)
+
+                $sync["WPFWin11ISODoneLabel"].Text        = "ISO saved to $OutputISO"
+                $sync["WPFWin11ISODonePanel"].Visibility  = "Visible"
+            }
+            Set-WinUtilISOStep -Step "Output"
             Show-WinUtilMessage -Message "ISO exported successfully!`n`n$outputISO" -Title "Export Complete" -Button "OK" -Icon "Info" | Out-Null
         } catch {
             Write-WinUtilISOLog -Level "ERROR" -Message "ISO export failed: $_"
             $_.Exception.Data["WinUtilErrorReported"] = $true
+            Set-WinUtilISOStep -Step "Output"
             Show-WinUtilMessage -Message "ISO export failed:`n`n$_" -Title "Error" -Button "OK" -Icon "Error" | Out-Null
             throw
         } finally {
-            Invoke-WPFUIThread -ScriptBlock { $sync["WPFWin11ISOChooseISOButton"].IsEnabled = $true }
+            Invoke-WPFUIThread -ScriptBlock {
+                $sync["WPFWin11ISOChooseISOButton"].IsEnabled = $true
+
+                # Cancellation skips catch, so the working page can still be up here
+                if ($sync["WPFWin11ISOWorkingSection"].IsSelected) {
+                    Set-WinUtilISOStep -Step "Output"
+                }
+            }
         }
     }
 }
@@ -4003,17 +4162,6 @@ function Invoke-WinUtilISOScript {
             }
         }
 
-        function Test-WinUtilISODriverExtensionClass {
-            param ([Parameter(Mandatory)][System.IO.FileInfo]$InfFile)
-
-            try {
-                return (Get-Content -LiteralPath $InfFile.FullName -Raw -ErrorAction Stop) -match '(?im)^\s*Class\s*=\s*"?Extension"?\s*(?:;.*)?$'
-            } catch {
-                $null = & $Logger "Warning: could not classify driver '$($InfFile.FullName)': $_"
-                return $false
-            }
-        }
-
         function Get-WinUtilISODriverPackageVersion {
             param ([Parameter(Mandatory)][System.IO.FileInfo]$InfFile)
 
@@ -4079,15 +4227,6 @@ function Invoke-WinUtilISOScript {
 
             foreach ($driverFolderGroup in $DriverFolderGroups) {
                 $driverFolder = [string]$driverFolderGroup.Name
-                $isExtension = [bool]@($driverFolderGroup.Group | Where-Object { Test-WinUtilISODriverExtensionClass -InfFile $_ }).Count
-
-                if ($isExtension) {
-                    # $null = discards $Logger's own output; this function's return value is captured
-                    # by the caller, and an emitting logger (e.g. this function's own default) would
-                    # otherwise leak into the surviving-folder list.
-                    $null = & $Logger "Excluding extension-class driver package '$driverFolder' from Add-Driver (Class=Extension is not a serviceable hardware driver)."
-                    continue
-                }
 
                 # DISM names exported package folders <infname>_<arch>_<hash>; grouping on infname+arch
                 # (dropping the hash) is what lets us recognize two exports of the same driver. When a
@@ -4265,103 +4404,97 @@ function Invoke-WinUtilISOScript {
             $metadataBefore = Get-WinUtilISOWimMetadata -ImagePath $InstallImagePath -Index $InstallImageIndex
             Assert-WinUtilISOWimMetadata -Before $metadataBefore
 
-            if ($stagedDriverFolders.Count -eq 0) {
-                # Nothing safe to inject (e.g. every exported package was an Extension-class add-on)
-                # isn't a failure: leave install.wim untouched and continue building the ISO.
-                & $Logger 'No drivers found to inject: every exported package was excluded (Extension class or stale duplicate). Skipping driver injection; install.wim is unchanged.'
-            } else {
-                $excludedDriverFolderGroups = @($driverFolders | Where-Object { $_.Name -notin $stagedDriverFolders })
-                foreach ($excludedDriverFolderGroup in $excludedDriverFolderGroups) {
-                    $excludedFolder = [string]$excludedDriverFolderGroup.Name
-                    $hasRetainedDescendant = [bool]@($stagedDriverFolders | Where-Object {
-                        $_.StartsWith("$excludedFolder\", [System.StringComparison]::OrdinalIgnoreCase)
-                    }).Count
-                    if ($hasRetainedDescendant) {
-                        try {
-                            foreach ($excludedInf in $excludedDriverFolderGroup.Group) {
-                                Remove-Item -LiteralPath $excludedInf.FullName -Force -ErrorAction Stop
-                            }
-                        } catch {
-                            throw "Failed to remove excluded driver INF files from package '$excludedFolder' before injection: $_"
+            $excludedDriverFolderGroups = @($driverFolders | Where-Object { $_.Name -notin $stagedDriverFolders })
+            foreach ($excludedDriverFolderGroup in $excludedDriverFolderGroups) {
+                $excludedFolder = [string]$excludedDriverFolderGroup.Name
+                $hasRetainedDescendant = [bool]@($stagedDriverFolders | Where-Object {
+                    $_.StartsWith("$excludedFolder\", [System.StringComparison]::OrdinalIgnoreCase)
+                }).Count
+                if ($hasRetainedDescendant) {
+                    try {
+                        foreach ($excludedInf in $excludedDriverFolderGroup.Group) {
+                            Remove-Item -LiteralPath $excludedInf.FullName -Force -ErrorAction Stop
                         }
+                    } catch {
+                        throw "Failed to remove excluded driver INF files from package '$excludedFolder' before injection: $_"
+                    }
 
-                        & $Logger "Keeping excluded driver package directory '$excludedFolder' because it contains a retained nested package, after removing its excluded INF files."
-                        continue
+                    & $Logger "Keeping excluded driver package directory '$excludedFolder' because it contains a retained nested package, after removing its excluded INF files."
+                    continue
+                }
+
+                try {
+                    Remove-Item -LiteralPath $excludedFolder -Recurse -Force -ErrorAction Stop
+                } catch {
+                    throw "Failed to remove excluded driver package '$excludedFolder' before injection: $_"
+                }
+            }
+
+            & $Logger "Exported $($stagedDriverFolders.Count) of $($driverFolders.Count) driver packages ($storageCount staged for WinPE, $($excludedDriverFolderGroups.Count) excluded)."
+
+            Set-ItemProperty -LiteralPath $InstallImagePath -Name IsReadOnly -Value $false
+            New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
+
+            # Add each package separately so one bad driver cannot fail the rest. Because
+            # /Recurse covers descendants, only the highest surviving folder in each tree
+            # needs its own DISM call.
+            $rootPackageFolders = @($stagedDriverFolders | Where-Object {
+                $candidate = $_
+                -not ($stagedDriverFolders | Where-Object { $candidate.StartsWith("$_\", [System.StringComparison]::OrdinalIgnoreCase) })
+            })
+
+            & $Logger "Adding $($rootPackageFolders.Count) root driver packages to install.wim."
+            $remainingDriverFolders = @($rootPackageFolders)
+            while ($remainingDriverFolders.Count -gt 0) {
+                & $Logger "Mounting install.wim index $InstallImageIndex for driver injection..."
+                Invoke-WinUtilISODism -Arguments @('/English', '/Mount-Image', "/ImageFile:$InstallImagePath", "/Index:$InstallImageIndex", "/MountDir:$mountDir") -Operation 'mount' | Out-Null
+                $imageMounted = $true
+
+                $failedDriverFolder = $null
+                foreach ($driverFolder in $remainingDriverFolders) {
+                    $driverName = $driverFolder
+                    if ($driverFolder.StartsWith($driverExportRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $driverName = $driverFolder.Substring($driverExportRoot.Length).TrimStart('\')
                     }
 
                     try {
-                        Remove-Item -LiteralPath $excludedFolder -Recurse -Force -ErrorAction Stop
+                        Invoke-WinUtilISODism -Arguments @('/English', "/Image:$mountDir", '/Add-Driver', "/Driver:$driverFolder", '/Recurse') -Operation "add-driver:$driverName" | Out-Null
                     } catch {
-                        throw "Failed to remove excluded driver package '$excludedFolder' before injection: $_"
-                    }
-                }
-
-                & $Logger "Exported $($stagedDriverFolders.Count) of $($driverFolders.Count) driver packages ($storageCount staged for WinPE, $($excludedDriverFolderGroups.Count) excluded)."
-
-                Set-ItemProperty -LiteralPath $InstallImagePath -Name IsReadOnly -Value $false
-                New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
-
-                # Add each package separately so one bad driver cannot fail the rest. Because
-                # /Recurse covers descendants, only the highest surviving folder in each tree
-                # needs its own DISM call.
-                $rootPackageFolders = @($stagedDriverFolders | Where-Object {
-                    $candidate = $_
-                    -not ($stagedDriverFolders | Where-Object { $candidate.StartsWith("$_\", [System.StringComparison]::OrdinalIgnoreCase) })
-                })
-
-                & $Logger "Adding $($rootPackageFolders.Count) root driver packages to install.wim."
-                $remainingDriverFolders = @($rootPackageFolders)
-                while ($remainingDriverFolders.Count -gt 0) {
-                    & $Logger "Mounting install.wim index $InstallImageIndex for driver injection..."
-                    Invoke-WinUtilISODism -Arguments @('/English', '/Mount-Image', "/ImageFile:$InstallImagePath", "/Index:$InstallImageIndex", "/MountDir:$mountDir") -Operation 'mount' | Out-Null
-                    $imageMounted = $true
-
-                    $failedDriverFolder = $null
-                    foreach ($driverFolder in $remainingDriverFolders) {
-                        $driverName = $driverFolder
-                        if ($driverFolder.StartsWith($driverExportRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-                            $driverName = $driverFolder.Substring($driverExportRoot.Length).TrimStart('\')
-                        }
-
-                        try {
-                            Invoke-WinUtilISODism -Arguments @('/English', "/Image:$mountDir", '/Add-Driver', "/Driver:$driverFolder", '/Recurse') -Operation "add-driver:$driverName" | Out-Null
-                        } catch {
-                            & $Logger "Warning: failed to add driver package '$driverName': $_"
-                            $failedDriverFolder = $driverFolder
-                            break
-                        }
-                    }
-
-                    if (-not $failedDriverFolder) {
+                        & $Logger "Warning: failed to add driver package '$driverName': $_"
+                        $failedDriverFolder = $driverFolder
                         break
                     }
-
-                    & $Logger "Discarding the potentially partial install.wim mount before continuing without '$driverName'."
-                    try {
-                        Invoke-WinUtilISODism -Arguments @('/English', '/Unmount-Image', "/MountDir:$mountDir", '/Discard') -Operation 'discard' | Out-Null
-                        $imageMounted = $false
-                    } catch {
-                        throw "Failed to discard the potentially partial install.wim mount after driver package '$driverName' failed: $_"
-                    }
-
-                    $remainingDriverFolders = @($remainingDriverFolders | Where-Object { $_ -ne $failedDriverFolder })
                 }
 
-                $addedCount = $remainingDriverFolders.Count
-                if ($addedCount -eq 0) {
-                    # Boot-storage drivers staged for WinPE remain available to Windows Setup.
-                    & $Logger "Warning: none of the $($rootPackageFolders.Count) exported driver packages could be added; continuing with an unmodified install.wim."
-                } else {
-                    & $Logger "Added $addedCount of $($rootPackageFolders.Count) driver packages to install.wim."
-                    & $Logger 'Committing the driver-only install.wim change...'
-                    Invoke-WinUtilISODism -Arguments @('/English', '/Unmount-Image', "/MountDir:$mountDir", '/Commit') -Operation 'commit' | Out-Null
+                if (-not $failedDriverFolder) {
+                    break
+                }
+
+                & $Logger "Discarding the potentially partial install.wim mount before continuing without '$driverName'."
+                try {
+                    Invoke-WinUtilISODism -Arguments @('/English', '/Unmount-Image', "/MountDir:$mountDir", '/Discard') -Operation 'discard' | Out-Null
                     $imageMounted = $false
-
-                    $metadataAfter = Get-WinUtilISOWimMetadata -ImagePath $InstallImagePath -Index $InstallImageIndex
-                    Assert-WinUtilISOWimMetadata -Before $metadataBefore -After $metadataAfter
-                    & $Logger 'Driver injection complete; install.wim metadata validation passed.'
-                    $DriversInjected.Value = $true
+                } catch {
+                    throw "Failed to discard the potentially partial install.wim mount after driver package '$driverName' failed: $_"
                 }
+
+                $remainingDriverFolders = @($remainingDriverFolders | Where-Object { $_ -ne $failedDriverFolder })
+            }
+
+            $addedCount = $remainingDriverFolders.Count
+            if ($addedCount -eq 0) {
+                # Boot-storage drivers staged for WinPE remain available to Windows Setup.
+                & $Logger "Warning: none of the $($rootPackageFolders.Count) exported driver packages could be added; continuing with an unmodified install.wim."
+            } else {
+                & $Logger "Added $addedCount of $($rootPackageFolders.Count) driver packages to install.wim."
+                & $Logger 'Committing the driver-only install.wim change...'
+                Invoke-WinUtilISODism -Arguments @('/English', '/Unmount-Image', "/MountDir:$mountDir", '/Commit') -Operation 'commit' | Out-Null
+                $imageMounted = $false
+
+                $metadataAfter = Get-WinUtilISOWimMetadata -ImagePath $InstallImagePath -Index $InstallImageIndex
+                Assert-WinUtilISOWimMetadata -Before $metadataBefore -After $metadataAfter
+                & $Logger 'Driver injection complete; install.wim metadata validation passed.'
+                $DriversInjected.Value = $true
             }
         } finally {
             if ($imageMounted -or (Test-WinUtilISOMountedImage -Path $mountDir)) {
@@ -4731,7 +4864,7 @@ function Invoke-WinUtilISOWriteUSB {
     $usbDisks    = $sync["Win11ISOUSBDisks"]
 
     if (-not $contentsDir -or -not (Test-Path $contentsDir)) {
-        Show-WinUtilMessage -Message "No modified ISO content found. Please complete Steps 1-3 first." -Title "Not Ready" -Button "OK" -Icon "Warning" | Out-Null
+        Show-WinUtilMessage -Message "No modified ISO content found. Please run the modification step first." -Title "Not Ready" -Button "OK" -Icon "Warning" | Out-Null
         return
     }
 
@@ -4779,6 +4912,7 @@ function Invoke-WinUtilISOWriteUSB {
         param($DiskNumber, $contentsDir)
 
         Invoke-WPFUIThread -ScriptBlock { $sync["WPFWin11ISOWriteUSBButton"].IsEnabled = $false }
+        Set-WinUtilISOStep -Step "Working" -Label "Writing the USB drive"
 
         try {
             Write-WinUtilISOLog "Starting USB write to Disk $DiskNumber..."
@@ -4925,14 +5059,29 @@ function Invoke-WinUtilISOWriteUSB {
             Step-WinUtilJob -Status "USB write complete" -Percent 100
             Write-WinUtilISOLog "USB drive is ready for use."
 
+            Invoke-WPFUIThread -Parameters @{ DiskNumber = $DiskNumber } -ScriptBlock {
+                param($DiskNumber)
+
+                $sync["WPFWin11ISODoneLabel"].Text = "Disk $DiskNumber is ready to boot from."
+                $sync["WPFWin11ISODonePanel"].Visibility = "Visible"
+            }
+            Set-WinUtilISOStep -Step "Output"
             Show-WinUtilMessage -Message "USB drive created successfully!`n`nYou can now boot from this drive to install Windows 11." -Title "USB Ready" -Button "OK" -Icon "Info" | Out-Null
         } catch {
             Write-WinUtilISOLog -Level "ERROR" -Message "USB write failed: $_"
             $_.Exception.Data["WinUtilErrorReported"] = $true
+            Set-WinUtilISOStep -Step "Output"
             Show-WinUtilMessage -Message "USB write failed:`n`n$_" -Title "USB Write Error" -Button "OK" -Icon "Error" | Out-Null
             throw
         } finally {
-            Invoke-WPFUIThread -ScriptBlock { $sync["WPFWin11ISOWriteUSBButton"].IsEnabled = $true }
+            Invoke-WPFUIThread -ScriptBlock {
+                $sync["WPFWin11ISOWriteUSBButton"].IsEnabled = $true
+
+                # Cancellation skips catch, so the working page can still be up here
+                if ($sync["WPFWin11ISOWorkingSection"].IsSelected) {
+                    Set-WinUtilISOStep -Step "Output"
+                }
+            }
         }
     }
 }
@@ -6023,6 +6172,21 @@ function Set-WinUtilDNS {
     if($DNSProvider -eq "Default") {
         Write-WinUtilLog -Component "DNS" -Message "DNS provider is Default; no DNS changes applied."
         return $true
+    }
+
+    if($DNSProvider -eq "Fastest") {
+        Write-WinUtilLog -Component "DNS" -Message "Auto-detecting fastest DNS provider via latency benchmark..."
+        $benchmark = Get-WinUtilDNSBenchmark
+        $validFastest = $benchmark | Where-Object { $_.LatencyMs -lt 9999 } | Select-Object -First 1
+        if ($validFastest) {
+            $DNSProvider = $validFastest.Provider
+            Write-Host "Auto-selected fastest DNS provider: $DNSProvider ($($validFastest.LatencyMs) ms)"
+            Write-WinUtilLog -Component "DNS" -Message "Auto-selected fastest DNS provider: $DNSProvider ($($validFastest.LatencyMs) ms)"
+        } else {
+            Write-Warning "Could not measure DNS latency to any provider; keeping current network adapter DNS settings."
+            Write-WinUtilLog -Component "DNS" -Message "Benchmark timeout or all probes failed; aborting DNS change to preserve existing settings."
+            return $false
+        }
     }
 
     try {
@@ -7841,6 +8005,14 @@ Version  : <a href="https://github.com/ChrisTitusTech/winutil/releases/tag/$($sy
 
     $sync["WPFWin11ISOCleanResetButton"].Add_Click({
         Invoke-WinUtilISOCleanAndReset
+    })
+
+    $sync["WPFWin11ISOBackButton"].Add_Click({
+        $sync["WPFWin11ISOSelectSection"].IsSelected = $true
+    })
+
+    $sync["WPFWin11ISOForwardButton"].Add_Click({
+        $sync["WPFWin11ISOModifySection"].IsSelected = $true
     })
 
     $buildClock.Stop()
@@ -11824,6 +11996,15 @@ $sync.configs.applications = @'
     "winget": "7zip.7zip",
     "foss": true
   },
+  "WPFInstallabdownloadmanager": {
+    "category": "工具程式",
+    "choco": "ab-download-manager",
+    "content": "AB Download Manager",
+    "description": "AB Download Manager is an open-source download accelerator and manager with multi-threaded downloads, queue scheduling, speed limiting, and browser integration.",
+    "link": "https://abdownloadmanager.com/",
+    "winget": "amir1376.ABDownloadManager",
+    "foss": true
+  },
   "WPFInstalladobe": {
     "category": "Document",
     "choco": "adobereader",
@@ -13416,6 +13597,23 @@ $sync.configs.applications = @'
     "winget": "LizardByte.Sunshine",
     "foss": true
   },
+  "WPFInstallsynctrayzor": {
+    "category": "自架工具",
+    "choco": "synctrayzor",
+    "content": "SyncTrayzor",
+    "description": "SyncTrayzor is a Windows tray utility that bundles and wraps Syncthing, making it behave like a native application to easily manage and monitor file synchronization.",
+    "link": "https://github.com/GermanCoding/SyncTrayzor",
+    "winget": "GermanCoding.SyncTrayzor"
+  },
+  "WPFInstallsyncthing": {
+    "category": "自架工具",
+    "choco": "syncthing",
+    "content": "Syncthing (CLI / Web UI)",
+    "description": "Syncthing is a decentralized, peer-to-peer file synchronization tool that securely syncs files directly across devices without cloud servers, managed via a local web interface.",
+    "link": "https://syncthing.net/",
+    "winget": "Syncthing.Syncthing",
+    "foss": true
+  },
   "WPFInstalltcpview": {
     "category": "Microsoft 工具",
     "choco": "tcpview",
@@ -13823,9 +14021,8 @@ $sync.configs.applications = @'
   },
   "WPFInstallOverwolf": {
     "category": "遊戲",
-    "choco": "overwolf",
-    "content": "Overwolf",
-    "description": "熱門的遊戲覆疊與輔助應用程式平台（模組管理器、追蹤器等），廣受玩家使用。",
+    "content": "CurseForge",
+    "description": "CurseForge is a desktop application for managing mods and modpacks across multiple games, powered by Overwolf.",
     "link": "https://www.overwolf.com/app/overwolf-curseforge",
     "winget": "Overwolf.CurseForge",
     "foss": false
@@ -14265,6 +14462,7 @@ $sync.configs.appx = @'
 $sync.configs.dns = @'
 {
   "Google": {
+    "BenchmarkEligible": true,
     "Primary": "8.8.8.8",
     "Secondary": "8.8.4.4",
     "Primary6": "2001:4860:4860::8888",
@@ -14272,6 +14470,7 @@ $sync.configs.dns = @'
     "DohTemplate": "https://dns.google/dns-query"
   },
   "Cloudflare": {
+    "BenchmarkEligible": true,
     "Primary": "1.1.1.1",
     "Secondary": "1.0.0.1",
     "Primary6": "2606:4700:4700::1111",
@@ -14319,60 +14518,6 @@ $sync.configs.dns = @'
     "Primary6": "2a10:50c0::bad1:ff",
     "Secondary6": "2a10:50c0::bad2:ff",
     "DohTemplate": "https://family.adguard-dns.com/dns-query"
-  },
-  "Mullvad": {
-    "Primary": "194.242.2.2",
-    "Secondary": "194.242.2.3",
-    "Primary6": "2a07:e340::2",
-    "Secondary6": "2a07:e340::3",
-    "DohOnly": true,
-    "DohTemplate": "https://dns.mullvad.net/dns-query",
-    "SecondaryDohTemplate": "https://adblock.dns.mullvad.net/dns-query"
-  },
-  "Mullvad_Ads_Trackers": {
-    "Primary": "194.242.2.3",
-    "Secondary": "194.242.2.2",
-    "Primary6": "2a07:e340::3",
-    "Secondary6": "2a07:e340::2",
-    "DohOnly": true,
-    "DohTemplate": "https://adblock.dns.mullvad.net/dns-query",
-    "SecondaryDohTemplate": "https://dns.mullvad.net/dns-query"
-  },
-  "Mullvad_Ads_Trackers_Malware": {
-    "Primary": "194.242.2.4",
-    "Secondary": "194.242.2.3",
-    "Primary6": "2a07:e340::4",
-    "Secondary6": "2a07:e340::3",
-    "DohOnly": true,
-    "DohTemplate": "https://base.dns.mullvad.net/dns-query",
-    "SecondaryDohTemplate": "https://adblock.dns.mullvad.net/dns-query"
-  },
-  "Mullvad_Ads_Trackers_Malware_Social": {
-    "Primary": "194.242.2.5",
-    "Secondary": "194.242.2.4",
-    "Primary6": "2a07:e340::5",
-    "Secondary6": "2a07:e340::4",
-    "DohOnly": true,
-    "DohTemplate": "https://extended.dns.mullvad.net/dns-query",
-    "SecondaryDohTemplate": "https://base.dns.mullvad.net/dns-query"
-  },
-  "Mullvad_Ads_Trackers_Malware_Adult_Gambling": {
-    "Primary": "194.242.2.6",
-    "Secondary": "194.242.2.5",
-    "Primary6": "2a07:e340::6",
-    "Secondary6": "2a07:e340::5",
-    "DohOnly": true,
-    "DohTemplate": "https://family.dns.mullvad.net/dns-query",
-    "SecondaryDohTemplate": "https://extended.dns.mullvad.net/dns-query"
-  },
-  "Mullvad_Ads_Trackers_Malware_Adult_Gambling_Social": {
-    "Primary": "194.242.2.9",
-    "Secondary": "194.242.2.6",
-    "Primary6": "2a07:e340::9",
-    "Secondary6": "2a07:e340::6",
-    "DohOnly": true,
-    "DohTemplate": "https://all.dns.mullvad.net/dns-query",
-    "SecondaryDohTemplate": "https://family.dns.mullvad.net/dns-query"
   }
 }
 '@ | ConvertFrom-Json
@@ -14814,6 +14959,9 @@ $sync.configs.themes = @'
     "FontSize": "12",
     "FontFamily": "Arial",
     "HeaderFontSize": "16",
+    "Win11StepTitleFontSize": "22",
+    "Win11StepHeroFontSize": "40",
+    "Win11LogFontFamily": "Consolas, Monaco",
     "HeaderFontFamily": "Consolas, Monaco",
     "CheckBoxBulletDecoratorSize": "14",
     "CheckBoxMargin": "15,0,0,2",
@@ -16393,7 +16541,7 @@ $sync.configs.tweaks = @'
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/customize-preferences/loginblur"
   },
-  "WPFTweaksDisableLockscreen": {
+  "WPFToggleDisableLockscreen": {
     "Content": "鎖定畫面 - 停用",
     "Description": "在開機與喚醒時完全跳過鎖定畫面，直接進入登入畫面。",
     "category": "自訂偏好設定",
@@ -16584,7 +16732,7 @@ $sync.configs.tweaks = @'
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "Type": "Combobox",
-    "ComboItems": "Default DHCP Google Cloudflare Cloudflare_Malware Cloudflare_Malware_Adult Open_DNS Quad9 AdGuard_Ads_Trackers AdGuard_Ads_Trackers_Malware_Adult Mullvad Mullvad_Ads_Trackers Mullvad_Ads_Trackers_Malware Mullvad_Ads_Trackers_Malware_Social Mullvad_Ads_Trackers_Malware_Adult_Gambling Mullvad_Ads_Trackers_Malware_Adult_Gambling_Social",
+    "ComboItems": "Default DHCP Fastest Google Cloudflare Cloudflare_Malware Cloudflare_Malware_Adult Open_DNS Quad9 AdGuard_Ads_Trackers AdGuard_Ads_Trackers_Malware_Adult",
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/changedns"
   },
   "WPFAddUltPerf": {
@@ -16913,12 +17061,14 @@ $inputXML = @'
                                    AllowsTransparency="True"
                                    PopupAnimation="Slide">
                                 <Border Name="DropDownBorder"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
                                         Background="{TemplateBinding Background}"
                                         BorderBrush="{DynamicResource BorderColor}"
                                         BorderThickness="1"
                                         CornerRadius="4">
                                     <ScrollViewer>
-                                        <ItemsPresenter HorizontalAlignment="Left" VerticalAlignment="Center" Margin="4,2"/>
+                                        <!-- Stretched, so an item's highlight spans the popup rather than just its text -->
+                                        <ItemsPresenter HorizontalAlignment="Stretch" Margin="4,2"/>
                                     </ScrollViewer>
                                 </Border>
                             </Popup>
@@ -16928,8 +17078,11 @@ $inputXML = @'
             </Setter>
         </Style>
         <Style TargetType="ComboBoxItem">
-            <Setter Property="Background" Value="{DynamicResource ComboBoxBackgroundColor}"/>
+            <!-- Transparent rather than its own colour: the item used to paint one background and
+                 the popup another, which read as a stack of labels on a mismatched sheet -->
+            <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{DynamicResource ComboBoxForegroundColor}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Padding" Value="6,3"/>
             <Setter Property="ContentTemplate">
                 <Setter.Value>
@@ -18208,296 +18361,594 @@ $inputXML = @'
             </TabItem>
             <TabItem Header="Win11ISO" Visibility="Collapsed" Name="WPFTab5">
                 <Grid Name="Win11ISOPanel" Margin="{DynamicResource TabContentMargin}" Background="Transparent">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>  <!-- Steps 1-4 -->
-                        <RowDefinition Height="*"/>     <!-- Log / Status -->
-                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
 
-                    <!-- Steps 1-4 -->
-                    <StackPanel Grid.Row="0">
+                    <Border Grid.Column="0" Style="{StaticResource BorderStyle}" Padding="20,16">
+                        <Grid>
+                        <!-- The lopsided weight is what makes the middle column min(available, 620)
+                             rather than a third of the card -->
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="1000*" MaxWidth="620"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Name="WPFWin11ISOBackButton"
+                                Grid.Column="0"
+                                Margin="0,0,10,0"
+                                Content="&#xE76B;"
+                                FontFamily="Segoe MDL2 Assets"
+                                FontSize="{DynamicResource Win11StepTitleFontSize}"
+                                MinWidth="44" MinHeight="72"
+                                Background="Transparent"
+                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                Panel.ZIndex="1"
+                                ToolTip="Back to the previous step">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource HoverButtonStyle}">
+                                    <Setter Property="Visibility" Value="Hidden"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsSelected, ElementName=WPFWin11ISOModifySection}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Name="WPFWin11ISOForwardButton"
+                                Grid.Column="2"
+                                Margin="10,0,0,0"
+                                Content="&#xE76C;"
+                                FontFamily="Segoe MDL2 Assets"
+                                FontSize="{DynamicResource Win11StepTitleFontSize}"
+                                MinWidth="44" MinHeight="72"
+                                Background="Transparent"
+                                HorizontalAlignment="Left" VerticalAlignment="Center"
+                                Panel.ZIndex="1"
+                                ToolTip="Forward to the next step">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource HoverButtonStyle}">
+                                    <Setter Property="Visibility" Value="Hidden"/>
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding IsSelected, ElementName=WPFWin11ISOSelectSection}" Value="True"/>
+                                                <Condition Binding="{Binding IsEnabled, ElementName=WPFWin11ISOModifySection}" Value="True"/>
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </MultiDataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <TabControl Name="WPFWin11ISOSteps"
+                                    Grid.Column="0" Grid.ColumnSpan="3"
+                                    Background="Transparent"
+                                    BorderThickness="0">
+                            <TabControl.Resources>
+                                <!-- Text colours: the implicit TextBlock style would paint anything unstyled
+                                     cyan on a label background, so every text block here carries a style. -->
+                                <Style x:Key="Win11StepHeaderText" TargetType="TextBlock">
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="Foreground"
+                                            Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type TabItem}}}"/>
+                                </Style>
+                                <Style x:Key="Win11ButtonText" TargetType="TextBlock" BasedOn="{StaticResource Win11StepHeaderText}">
+                                    <Setter Property="FontSize" Value="{DynamicResource ButtonFontSize}"/>
+                                    <Setter Property="Foreground"
+                                            Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+                                </Style>
+                                <Style x:Key="Win11StepIcon" TargetType="TextBlock" BasedOn="{StaticResource Win11StepHeaderText}">
+                                    <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+                                    <Setter Property="FontSize" Value="{DynamicResource IconFontSize}"/>
+                                    <Setter Property="Margin" Value="0,0,8,0"/>
+                                </Style>
+                                <Style x:Key="Win11ButtonIcon" TargetType="TextBlock" BasedOn="{StaticResource Win11ButtonText}">
+                                    <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+                                    <Setter Property="FontSize" Value="{DynamicResource IconFontSize}"/>
+                                    <Setter Property="Margin" Value="0,0,10,0"/>
+                                </Style>
+
+                                <Style TargetType="TabItem">
+                                    <Setter Property="FontSize" Value="{DynamicResource FontSize}"/>
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource ToggleButtonOffColor}"/>
+                                    <Setter Property="HeaderTemplate">
+                                        <Setter.Value>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal" Cursor="Hand">
+                                                    <TextBlock Style="{StaticResource Win11StepIcon}"
+                                                               Text="{Binding Tag, RelativeSource={RelativeSource AncestorType={x:Type TabItem}}}"/>
+                                                    <TextBlock Style="{StaticResource Win11StepHeaderText}" Text="{Binding}"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="TabItem">
+                                                <Border Background="Transparent" Padding="0,0,32,0">
+                                                    <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter Property="Foreground" Value="{DynamicResource MainForegroundColor}"/>
+                                        </Trigger>
+                                        <Trigger Property="IsEnabled" Value="False">
+                                            <Setter Property="Opacity" Value="0.45"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                                <Style TargetType="TabControl">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="TabControl">
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="*"/>
+                                                    </Grid.RowDefinitions>
+                                                    <TabPanel Grid.Row="0"
+                                                              IsItemsHost="True"
+                                                              Background="Transparent"
+                                                              Margin="0,0,0,10"/>
+                                                    <Border Grid.Row="1"
+                                                            BorderBrush="{DynamicResource BorderColor}"
+                                                            BorderThickness="0,1,0,0"
+                                                            Padding="0,10,0,0">
+                                                        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                                      HorizontalScrollBarVisibility="Disabled">
+                                                            <Grid MinHeight="{Binding ViewportHeight, RelativeSource={RelativeSource AncestorType={x:Type ScrollViewer}}}">
+                                                                <ContentPresenter ContentSource="SelectedContent"/>
+                                                            </Grid>
+                                                        </ScrollViewer>
+                                                    </Border>
+                                                </Grid>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+
+                                <Style x:Key="Win11StepColumn" TargetType="StackPanel">
+                                    <Setter Property="MaxWidth" Value="620"/>
+                                    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                </Style>
+                                <Style x:Key="Win11StepHero" TargetType="TextBlock">
+                                    <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+                                    <Setter Property="FontSize" Value="{DynamicResource Win11StepHeroFontSize}"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource LabelboxForegroundColor}"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="Margin" Value="0,0,0,14"/>
+                                </Style>
+                                <Style x:Key="Win11StepTitle" TargetType="TextBlock">
+                                    <Setter Property="FontSize" Value="{DynamicResource Win11StepTitleFontSize}"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource LabelboxForegroundColor}"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="TextAlignment" Value="Center"/>
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="Margin" Value="0,0,0,6"/>
+                                </Style>
+                                <Style x:Key="Win11StepBody" TargetType="TextBlock">
+                                    <Setter Property="FontSize" Value="{DynamicResource FontSize}"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource MainForegroundColor}"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="Margin" Value="0,0,0,10"/>
+                                </Style>
+                                <Style x:Key="Win11StepSubtitle" TargetType="TextBlock" BasedOn="{StaticResource Win11StepBody}">
+                                    <Setter Property="Opacity" Value="0.75"/>
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="TextAlignment" Value="Center"/>
+                                    <Setter Property="MaxWidth" Value="520"/>
+                                    <Setter Property="Margin" Value="0,0,0,20"/>
+                                </Style>
+                                <Style x:Key="Win11StepLabel" TargetType="TextBlock" BasedOn="{StaticResource Win11StepBody}">
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource LabelboxForegroundColor}"/>
+                                    <Setter Property="Margin" Value="0,0,0,6"/>
+                                </Style>
+                                <Style x:Key="Win11StepValue" TargetType="TextBlock" BasedOn="{StaticResource Win11StepBody}">
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="Margin" Value="0"/>
+                                </Style>
+                                <Style x:Key="Win11StepCaption" TargetType="TextBlock" BasedOn="{StaticResource Win11StepBody}">
+                                    <Setter Property="Opacity" Value="0.75"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="Margin" Value="0,0,6,0"/>
+                                </Style>
+
+                                <Style x:Key="Win11StepButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="Height" Value="34"/>
+                                    <Setter Property="Padding" Value="16,0"/>
+                                    <!-- The implicit style pins Width to ButtonWidth, which clips the longer labels -->
+                                    <Setter Property="Width" Value="Auto"/>
+                                    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                    <Setter Property="ContentTemplate">
+                                        <Setter.Value>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Style="{StaticResource Win11ButtonIcon}"
+                                                               Text="{Binding Tag, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+                                                    <TextBlock Style="{StaticResource Win11ButtonText}" Text="{Binding}"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+
+                                <Style x:Key="Win11InfoPanel" TargetType="Border">
+                                    <Setter Property="Background" Value="{DynamicResource MainBackgroundColor}"/>
+                                    <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
+                                    <Setter Property="BorderThickness" Value="1"/>
+                                    <Setter Property="CornerRadius" Value="5"/>
+                                    <Setter Property="Padding" Value="16"/>
+                                </Style>
+                                <Style x:Key="Win11FormPanel" TargetType="Border" BasedOn="{StaticResource Win11InfoPanel}">
+                                    <Setter Property="BorderBrush" Value="{DynamicResource LabelboxForegroundColor}"/>
+                                </Style>
+                                <Style x:Key="Win11SummaryIcon" TargetType="TextBlock" BasedOn="{StaticResource Win11StepIcon}">
+                                    <Setter Property="Foreground" Value="{DynamicResource LabelboxForegroundColor}"/>
+                                    <Setter Property="VerticalAlignment" Value="Top"/>
+                                    <Setter Property="Margin" Value="0,1,12,0"/>
+                                </Style>
+                                <Style x:Key="Win11SummaryRow" TargetType="StackPanel">
+                                    <Setter Property="Orientation" Value="Horizontal"/>
+                                    <Setter Property="Margin" Value="0,0,0,10"/>
+                                </Style>
+                            </TabControl.Resources>
 
                             <!-- ─── STEP 1 : Select Windows 11 ISO ─────────────── -->
-                            <Grid Name="WPFWin11ISOSelectSection" Margin="5" HorizontalAlignment="Left" MinWidth="{DynamicResource ButtonWidth}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
+                            <TabItem Name="WPFWin11ISOSelectSection" Tag="&#xE958;" Header="1   Select ISO">
+                                <StackPanel Style="{StaticResource Win11StepColumn}">
+                                    <TextBlock Text="&#xE958;" Style="{StaticResource Win11StepHero}"/>
+                                    <TextBlock Style="{StaticResource Win11StepTitle}" Text="Select your Windows 11 ISO"/>
+                                    <TextBlock Style="{StaticResource Win11StepSubtitle}">
+                                        Choose an official Windows 11 ISO downloaded from Microsoft. It will be
+                                        mounted and checked before anything is changed.
+                                    </TextBlock>
 
-                                <!-- Left: File Selector -->
-                                <StackPanel Grid.Column="0" Margin="5,5,15,5">
-                                    <TextBlock FontSize="{DynamicResource FontSize}" FontWeight="Bold"
-                                               Foreground="{DynamicResource MainForegroundColor}" Margin="0,0,0,8">
-                                        步驟 1 - 選擇 Windows 11 ISO
-                                    </TextBlock>
-                                    <TextBlock FontSize="{DynamicResource FontSize}" Foreground="{DynamicResource MainForegroundColor}"
-                                               TextWrapping="Wrap" Margin="0,0,0,6">瀏覽並選擇本機儲存的 Windows 11 ISO 檔案。僅支援從 Microsoft 官方下載的 ISO。</TextBlock>
-                                    <TextBlock FontSize="{DynamicResource FontSize}" Foreground="{DynamicResource MainForegroundColor}"
-                                               TextWrapping="Wrap" Margin="0,0,0,12" FontStyle="Italic">
-                                        <Run FontWeight="Bold">注意：</Run> 此功能僅適用於全新安裝的 Windows。
-                                    </TextBlock>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox Grid.Column="0"
-                                                 Name="WPFWin11ISOPath"
-                                                 IsReadOnly="True"
-                                                 VerticalAlignment="Center"
-                                                 Padding="6,4"
-                                                 Margin="0,0,6,0"
-                                                 Text="未選擇 ISO..."
-                                                 Foreground="{DynamicResource MainForegroundColor}"
-                                                 Background="{DynamicResource MainBackgroundColor}"/>
-                                        <Button Grid.Column="1"
-                                                Name="WPFWin11ISOBrowseButton"
-                                                Content="瀏覽"
-                                                Width="Auto" Padding="12,0"
-                                                Height="{DynamicResource ButtonHeight}"/>
-                                    </Grid>
-                                    <TextBlock Name="WPFWin11ISOFileInfo"
-                                               FontSize="{DynamicResource FontSize}"
-                                               Foreground="{DynamicResource MainForegroundColor}"
-                                               Margin="0,8,0,0"
-                                               TextWrapping="Wrap"
-                                               Visibility="Collapsed"/>
+                                    <Border Style="{StaticResource Win11FormPanel}" Margin="0,0,0,16">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource Win11StepLabel}" Text="ISO file"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0"
+                                                         Name="WPFWin11ISOPath"
+                                                         IsReadOnly="True"
+                                                         VerticalAlignment="Center"
+                                                         VerticalContentAlignment="Center"
+                                                         Height="34"
+                                                         Padding="10,0"
+                                                         Margin="0,0,12,0"
+                                                         Text="未選擇 ISO..."
+                                                         Foreground="{DynamicResource MainForegroundColor}"
+                                                         Background="{DynamicResource MainBackgroundColor}"/>
+                                                <Button Grid.Column="1" Name="WPFWin11ISOBrowseButton" MinWidth="130"
+                                                        Style="{StaticResource Win11StepButton}" Tag="&#xE8B7;" Content="Browse"/>
+                                            </Grid>
+                                            <!-- Hidden rather than collapsed so picking an ISO does not shift the page -->
+                                            <TextBlock Name="WPFWin11ISOFileInfo"
+                                                       Style="{StaticResource Win11StepBody}"
+                                                       Margin="0,10,0,0"
+                                                       Visibility="Hidden"
+                                                       Text="File size:"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Button Name="WPFWin11ISOMountButton" Margin="0,0,0,20"
+                                            Style="{StaticResource Win11StepButton}" Tag="&#xE8FB;" Content="Mount &amp; Verify ISO"/>
+
+                                    <Border Style="{StaticResource Win11InfoPanel}">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource Win11StepLabel}" Foreground="OrangeRed" Margin="0,0,0,10">
+                                                <Run FontFamily="Segoe MDL2 Assets" Text="&#xE7BA;"/>
+                                                <Run Text=" You must use an official Microsoft ISO"/>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource Win11StepBody}">
+                                                Third-party, pre-modified, or unofficial images are not supported
+                                                and may produce broken results. This is only meant for fresh and
+                                                new Windows installs.
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource Win11StepBody}" Margin="0,0,0,12">
+                                                On the download page choose Windows 11, your language, and 64-bit (x64).
+                                            </TextBlock>
+                                            <Button Name="WPFWin11ISODownloadLink"
+                                                    Style="{StaticResource Win11StepButton}" Tag="&#xE8A7;" Content="Open Microsoft Download Page"/>
+                                        </StackPanel>
+                                    </Border>
                                 </StackPanel>
+                            </TabItem>
 
-                                <!-- Right: Download guidance -->
-                                <Border Grid.Column="1"
-                                        Background="{DynamicResource MainBackgroundColor}"
-                                        BorderBrush="{DynamicResource BorderColor}"
-                                        BorderThickness="1" CornerRadius="5"
-                                        Margin="5" Padding="15">
-                                    <StackPanel>
-                                        <TextBlock FontSize="{DynamicResource FontSize}" FontWeight="Bold"
-                                                   Foreground="OrangeRed" Margin="0,0,0,10">
-                                            !!警告!! 你必須使用 Microsoft 官方 ISO
-                                        </TextBlock>
-                                        <TextBlock FontSize="{DynamicResource FontSize}"
-                                                   Foreground="{DynamicResource MainForegroundColor}"
-                                                   TextWrapping="Wrap" Margin="0,0,0,8">直接從 Microsoft.com 下載 Windows 11 ISO。不支援第三方、預先修改或非官方的映像，可能導致失敗。</TextBlock>
-                                        <TextBlock FontSize="{DynamicResource FontSize}"
-                                                   Foreground="{DynamicResource MainForegroundColor}"
-                                                   TextWrapping="Wrap" Margin="0,0,0,6">
-                                            在 Microsoft 下載頁面選擇：
-                                        </TextBlock>
-                                        <TextBlock FontSize="{DynamicResource FontSize}"
-                                                   Foreground="{DynamicResource MainForegroundColor}"
-                                                   TextWrapping="Wrap" Margin="12,0,0,12">
-                                            - 版本：Windows 11
-                                            <LineBreak/>- 語言：你偏好的語言
-                                            <LineBreak/>- 架構：64 位元 (x64)
-                                        </TextBlock>
-                                        <Button Name="WPFWin11ISODownloadLink"
-                                                Content="開啟 Microsoft 下載頁面"
-                                                HorizontalAlignment="Left"
-                                                Width="Auto" Padding="12,0"
-                                                Height="{DynamicResource ButtonHeight}"/>
-                                    </StackPanel>
-                                </Border>
-                            </Grid>
-
-                            <!-- ─── STEP 2 : Mount & Verify ISO ──────────────────── -->
-                            <Grid Name="WPFWin11ISOMountSection"
-                                  Margin="5"
-                                  Visibility="Collapsed"
-                                  HorizontalAlignment="Left" MinWidth="{DynamicResource ButtonWidth}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-
-                                <StackPanel Grid.Column="0" Margin="0,0,20,0" VerticalAlignment="Top">
-                                    <TextBlock FontSize="{DynamicResource FontSize}" FontWeight="Bold"
-                                               Foreground="{DynamicResource MainForegroundColor}" Margin="0,0,0,8">
-                                        步驟 2 - 掛載並驗證 ISO
+                            <!-- ─── STEP 2 : Modify install.wim ───────────────────── -->
+                            <TabItem Name="WPFWin11ISOModifySection" IsEnabled="False" Tag="&#xE713;" Header="2   Modify Image">
+                                <StackPanel Style="{StaticResource Win11StepColumn}">
+                                    <TextBlock Text="&#xE713;" Style="{StaticResource Win11StepHero}"/>
+                                    <TextBlock Style="{StaticResource Win11StepTitle}" Text="Modify the image"/>
+                                    <TextBlock Style="{StaticResource Win11StepSubtitle}">
+                                        Pick what goes into the image, then start. This takes several minutes
+                                        depending on your hardware.
                                     </TextBlock>
-                                    <TextBlock FontSize="{DynamicResource FontSize}"
-                                               Foreground="{DynamicResource MainForegroundColor}"
-                                               TextWrapping="Wrap" Margin="0,0,0,12" MaxWidth="320">掛載 ISO，並在進行任何修改前確認其中含有有效的 Windows 11 install.wim。</TextBlock>
-                                    <Button Name="WPFWin11ISOMountButton"
-                                            Content="掛載並驗證 ISO"
-                                            HorizontalAlignment="Left"
-                                            Width="Auto" Padding="12,0"
-                                            Height="{DynamicResource ButtonHeight}"/>
-                                    <CheckBox Name="WPFWin11ISOInjectDrivers"
-                                              Content="注入目前系統驅動程式"
-                                              FontSize="{DynamicResource FontSize}"
-                                              Foreground="{DynamicResource MainForegroundColor}"
-                                              IsChecked="False"
-                                              Margin="0,8,0,0"
-                                              ToolTip="Stages boot-storage drivers for Setup and adds all exported drivers to the selected install.wim edition in one DISM pass."/>
-                                </StackPanel>
 
-                                <!-- Verification results panel -->
-                                <Border Grid.Column="1"
-                                        Name="WPFWin11ISOVerifyResultPanel"
-                                        Background="{DynamicResource MainBackgroundColor}"
-                                        BorderBrush="{DynamicResource BorderColor}"
-                                        BorderThickness="1" CornerRadius="5"
-                                        Padding="12" Margin="0,0,0,0"
-                                        Visibility="Collapsed">
-                                    <StackPanel>
-                                        <TextBlock Name="WPFWin11ISOMountDriveLetter"
-                                                   FontSize="{DynamicResource FontSize}"
-                                                   Foreground="{DynamicResource MainForegroundColor}"
-                                                   Margin="0,0,0,4"/>
-                                        <TextBlock Name="WPFWin11ISOArchLabel"
-                                                   FontSize="{DynamicResource FontSize}"
-                                                   Foreground="{DynamicResource MainForegroundColor}"
-                                                   Margin="0,0,0,4"/>
-                                        <TextBlock FontSize="{DynamicResource FontSize}" FontWeight="Bold"
-                                                   Foreground="{DynamicResource MainForegroundColor}"
-                                                   Margin="0,6,0,4">
-                                            選擇版本：
-                                        </TextBlock>
-                                        <ComboBox Name="WPFWin11ISOEditionComboBox"
-                                                  FontSize="{DynamicResource FontSize}"
-                                                  Foreground="{DynamicResource MainForegroundColor}"
-                                                  Background="{DynamicResource MainBackgroundColor}"
-                                                  HorizontalAlignment="Left"
-                                                  Margin="0,0,0,0"/>
-                                    </StackPanel>
-                                </Border>
-                            </Grid>
-
-                            <!-- ─── STEP 3 : Modify install.wim ───────────────────── -->
-                            <StackPanel Name="WPFWin11ISOModifySection"
-                                        Margin="5"
-                                        Visibility="Collapsed"
-                                        HorizontalAlignment="Left" MinWidth="{DynamicResource ButtonWidth}">
-                                <TextBlock FontSize="{DynamicResource FontSize}" FontWeight="Bold"
-                                           Foreground="{DynamicResource MainForegroundColor}" Margin="0,0,0,8">
-                                    步驟 3 - 修改 install.wim
-                                </TextBlock>
-                                <TextBlock FontSize="{DynamicResource FontSize}"
-                                           Foreground="{DynamicResource MainForegroundColor}"
-                                           TextWrapping="Wrap" Margin="0,0,0,12">ISO 內容會被解壓縮到暫存工作目錄，install.wim 會被修改（移除元件、套用調校），接著重新封裝。此程序視硬體效能可能需要數分鐘。</TextBlock>
-                                <Button Name="WPFWin11ISOModifyButton"
-                                        Content="執行 Windows ISO 修改與建立工具"
-                                        HorizontalAlignment="Left"
-                                        Width="Auto" Padding="12,0"
-                                        Height="{DynamicResource ButtonHeight}"/>
-                            </StackPanel>
-
-                            <!-- ─── STEP 4 : Output Options ───────────────────────── -->
-                            <StackPanel Name="WPFWin11ISOOutputSection"
-                                        Margin="5"
-                                        Visibility="Collapsed"
-                                        HorizontalAlignment="Left" MinWidth="{DynamicResource ButtonWidth}">
-                                <!-- Header row: title + Clean & Reset button -->
-                                <Grid Margin="0,0,0,12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" FontSize="{DynamicResource FontSize}" FontWeight="Bold"
-                                               Foreground="{DynamicResource MainForegroundColor}"
-                                               VerticalAlignment="Center">
-                                        步驟 4 - 輸出：你想如何處理修改後的映像？
-                                    </TextBlock>
-                                    <Button Grid.Column="1"
-                                            Name="WPFWin11ISOCleanResetButton"
-                                            Content="清除並重設"
-                                            Foreground="OrangeRed"
-                                            Width="Auto" Padding="12,0"
-                                            Height="{DynamicResource ButtonHeight}"
-                                            ToolTip="刪除暫存工作目錄並將介面重設回步驟 1"
-                                            Margin="12,0,0,0"/>
-                                </Grid>
-
-                                <!-- ── Choice prompt buttons ── -->
-                                <Grid Margin="0,0,0,12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="16"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Button Grid.Column="0"
-                                            Name="WPFWin11ISOChooseISOButton"
-                                            Content="另存為 ISO 檔"
-                                            HorizontalAlignment="Stretch"
-                                            Width="Auto" Padding="12,0"
-                                            Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Grid.Column="2"
-                                            Name="WPFWin11ISOChooseUSBButton"
-                                            Content="直接寫入 USB 隨身碟（會清除磁碟）"
-                                            Foreground="OrangeRed"
-                                            HorizontalAlignment="Stretch"
-                                            Width="Auto" Padding="12,0"
-                                            Height="{DynamicResource ButtonHeight}"/>
-                                </Grid>
-
-                                <!-- ── USB write sub-panel (revealed on USB choice) ── -->
-                                <Border Name="WPFWin11ISOOptionUSB"
-                                        Style="{StaticResource BorderStyle}"
-                                        Visibility="Collapsed"
-                                        Margin="0,8,0,0">
-                                    <StackPanel>
-                                        <TextBlock FontSize="{DynamicResource FontSize}"
-                                                   Foreground="{DynamicResource MainForegroundColor}"
-                                                   TextWrapping="Wrap" Margin="0,0,0,8">
-                                            <Run FontWeight="Bold" Foreground="OrangeRed">!! 所選 USB 磁碟上的所有資料將被永久清除 !!</Run>
-                                            <LineBreak/>
-                                            在下方選擇一個卸除式 USB 磁碟，然後點擊「清除並寫入」。
-                                        </TextBlock>
-                                        <!-- USB drive selector row -->
-                                        <Grid Margin="0,0,0,8">
+                                    <Border Name="WPFWin11ISOVerifyResultPanel"
+                                            Style="{StaticResource Win11InfoPanel}"
+                                            Padding="14,10"
+                                            Margin="0,0,0,14"
+                                            Visibility="Collapsed">
+                                        <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
-                                            <ComboBox Grid.Column="0"
-                                                      Name="WPFWin11ISOUSBDriveComboBox"
+                                            <TextBlock Grid.Column="1" Text="&#xE8FB;" Style="{StaticResource Win11SummaryIcon}"
+                                                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                <TextBlock Text="&#xE958;" Style="{StaticResource Win11StepIcon}"/>
+                                                <TextBlock Style="{StaticResource Win11StepCaption}" Text="Mounted at"/>
+                                                <TextBlock Name="WPFWin11ISOMountDriveLetter" Style="{StaticResource Win11StepValue}"/>
+                                                <TextBlock Text="&#xE8A5;" Style="{StaticResource Win11StepIcon}" Margin="22,0,8,0"/>
+                                                <TextBlock Style="{StaticResource Win11StepCaption}" Text="Image file"/>
+                                                <TextBlock Name="WPFWin11ISOImageFile" Style="{StaticResource Win11StepValue}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+
+                                    <Border Style="{StaticResource Win11FormPanel}" Margin="0,0,0,16">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource Win11StepLabel}" Text="Windows edition"/>
+                                            <ComboBox Name="WPFWin11ISOEditionComboBox"
+                                                      FontSize="{DynamicResource FontSize}"
                                                       Foreground="{DynamicResource MainForegroundColor}"
                                                       Background="{DynamicResource MainBackgroundColor}"
-                                                      VerticalAlignment="Center"
-                                                      Margin="0,0,6,0"/>
-                                            <Button Grid.Column="1"
-                                                    Name="WPFWin11ISORefreshUSBButton"
-                                                    Content="重新整理"
-                                                    Width="Auto" Padding="8,0"
-                                                    Height="{DynamicResource ButtonHeight}"/>
-                                        </Grid>
-                                        <Button Name="WPFWin11ISOWriteUSBButton"
-                                                Content="清除並寫入 USB"
-                                                Foreground="OrangeRed"
-                                                HorizontalAlignment="Stretch"
-                                                Width="Auto" Padding="12,0"
-                                                Height="{DynamicResource ButtonHeight}"
-                                                Margin="0,0,0,10"/>
-                                    </StackPanel>
-                                </Border>
+                                                      HorizontalAlignment="Stretch"
+                                                      Height="34"
+                                                      Margin="0,0,0,14"/>
+                                            <CheckBox Name="WPFWin11ISOInjectDrivers"
+                                                      Content="注入目前系統驅動程式"
+                                                      FontSize="{DynamicResource FontSize}"
+                                                      Foreground="{DynamicResource MainForegroundColor}"
+                                                      IsChecked="False"
+                                                      Cursor="Hand"
+                                                      ToolTip="Stages boot-storage drivers for Setup and adds all exported drivers to the selected install.wim edition in one DISM pass."/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Button Name="WPFWin11ISOModifyButton" Margin="0,0,0,20"
+                                            Style="{StaticResource Win11StepButton}" Tag="&#xE768;"
+                                            Content="Run Windows ISO Modification and Creator"/>
+
+                                    <Border Style="{StaticResource Win11InfoPanel}">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource Win11StepLabel}" Margin="0,0,0,12" Text="What this does to the image"/>
+                                            <StackPanel Style="{StaticResource Win11SummaryRow}">
+                                                <TextBlock Text="&#xE74D;" Style="{StaticResource Win11SummaryIcon}"/>
+                                                <TextBlock Style="{StaticResource Win11StepBody}" Margin="0"
+                                                           Text="Removes the preinstalled apps and the OneDrive setup"/>
+                                            </StackPanel>
+                                            <StackPanel Style="{StaticResource Win11SummaryRow}">
+                                                <TextBlock Text="&#xE950;" Style="{StaticResource Win11SummaryIcon}"/>
+                                                <TextBlock Style="{StaticResource Win11StepBody}" Margin="0"
+                                                           Text="Bypasses the TPM, Secure Boot, CPU, RAM and storage checks"/>
+                                            </StackPanel>
+                                            <StackPanel Style="{StaticResource Win11SummaryRow}">
+                                                <TextBlock Text="&#xE77B;" Style="{StaticResource Win11SummaryIcon}"/>
+                                                <TextBlock Style="{StaticResource Win11StepBody}" Margin="0"
+                                                           Text="Skips the Microsoft account screen so you can use a local account"/>
+                                            </StackPanel>
+                                            <StackPanel Style="{StaticResource Win11SummaryRow}">
+                                                <TextBlock Text="&#xE7EE;" Style="{StaticResource Win11SummaryIcon}"/>
+                                                <TextBlock Style="{StaticResource Win11StepBody}" Margin="0"
+                                                           Text="Turns off telemetry, Copilot, the chat icon and search box suggestions"/>
+                                            </StackPanel>
+                                            <StackPanel Style="{StaticResource Win11SummaryRow}" Margin="0">
+                                                <TextBlock Text="&#xE8EF;" Style="{StaticResource Win11SummaryIcon}"/>
+                                                <TextBlock Style="{StaticResource Win11StepBody}" Margin="0"
+                                                           Text="Pins the edition you picked above so Setup does not choose another one"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </TabItem>
+
+                            <!-- ─── STEP 3 : Output Options ───────────────────────── -->
+                            <TabItem Name="WPFWin11ISOOutputSection" IsEnabled="False" Tag="&#xE88E;" Header="3   Output">
+                                <StackPanel Style="{StaticResource Win11StepColumn}">
+                                    <TextBlock Text="&#xE88E;" Style="{StaticResource Win11StepHero}"/>
+                                    <TextBlock Style="{StaticResource Win11StepTitle}" Text="Your image is ready"/>
+                                    <TextBlock Style="{StaticResource Win11StepSubtitle}">
+                                        Save the modified image as an ISO file, or write it straight to a USB
+                                        drive you can boot from.
+                                    </TextBlock>
+
+                                    <Border Name="WPFWin11ISODonePanel"
+                                            Style="{StaticResource Win11InfoPanel}"
+                                            Padding="14,10"
+                                            Margin="0,0,0,14"
+                                            Visibility="Collapsed">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE8FB;" Style="{StaticResource Win11SummaryIcon}"
+                                                       VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                            <TextBlock Name="WPFWin11ISODoneLabel" Style="{StaticResource Win11StepValue}"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Button Name="WPFWin11ISOChooseISOButton" Margin="0,0,0,10"
+                                            Style="{StaticResource Win11StepButton}" Tag="&#xE74E;" Content="Save as an ISO File"/>
+                                    <Button Name="WPFWin11ISOChooseUSBButton" Foreground="OrangeRed"
+                                            Style="{StaticResource Win11StepButton}" Tag="&#xE88E;"
+                                            Content="Write Directly to a USB Drive (ERASES DRIVE)"/>
+
+                                    <Border Name="WPFWin11ISOOptionUSB"
+                                            Style="{StaticResource Win11FormPanel}"
+                                            Visibility="Collapsed"
+                                            Margin="0,14,0,0">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource Win11StepBody}">
+                                                <Run FontWeight="Bold" Foreground="OrangeRed">!! 所選 USB 磁碟上的所有資料將被永久清除 !!</Run>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource Win11StepLabel}" Text="USB drive"/>
+                                            <Grid Margin="0,0,0,12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ComboBox Grid.Column="0"
+                                                          Name="WPFWin11ISOUSBDriveComboBox"
+                                                          Foreground="{DynamicResource MainForegroundColor}"
+                                                          Background="{DynamicResource MainBackgroundColor}"
+                                                          VerticalAlignment="Center"
+                                                          Height="34"
+                                                          Margin="0,0,12,0"/>
+                                                <Button Grid.Column="1" Name="WPFWin11ISORefreshUSBButton" MinWidth="130"
+                                                        Style="{StaticResource Win11StepButton}" Tag="&#xE895;" Content="Refresh"/>
+                                            </Grid>
+                                            <Button Name="WPFWin11ISOWriteUSBButton" Foreground="OrangeRed"
+                                                    Style="{StaticResource Win11StepButton}" Tag="&#xE7BA;" Content="Erase &amp; Write to USB"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border BorderBrush="{DynamicResource BorderColor}" BorderThickness="0,1,0,0"
+                                            Margin="0,20,0,0" Padding="0,14,0,0">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource Win11StepSubtitle}" Margin="0,0,0,10"
+                                                       Text="Done with this image? Clear the temporary files and start again from step 1."/>
+                                            <Button Name="WPFWin11ISOCleanResetButton"
+                                                    HorizontalAlignment="Center" MinWidth="240"
+                                                    Style="{StaticResource Win11StepButton}" Tag="&#xE72C;" Content="Start Over"
+                                                    ToolTip="Delete the temporary working directory and go back to the first step"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </TabItem>
+
+                            <!-- ─── Working page: selected while a step runs, no header of its own ─── -->
+                            <TabItem Name="WPFWin11ISOWorkingSection" Visibility="Collapsed">
+                                <StackPanel Style="{StaticResource Win11StepColumn}">
+                                    <!-- BitmapCache because this is text: without it WPF re-rasterises the
+                                         glyph every frame on the interface thread and the spin stutters.
+                                         Cached, the rotation is a transform on an image the GPU already has. -->
+                                    <TextBlock Name="WPFWin11ISOWorkingSpinner"
+                                               Text="&#xE895;"
+                                               Tag="Forward"
+                                               RenderTransformOrigin="0.5,0.5"
+                                               CacheMode="BitmapCache">
+                                        <TextBlock.RenderTransform>
+                                            <RotateTransform Angle="0"/>
+                                        </TextBlock.RenderTransform>
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource Win11StepHero}">
+                                                <Style.Triggers>
+                                                    <!-- Tied to visibility, not to Loaded: the working page stays loaded
+                                                         while collapsed, so a Loaded trigger left it spinning forever -->
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding IsVisible, RelativeSource={RelativeSource Self}}" Value="True"/>
+                                                            <Condition Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="Forward"/>
+                                                        </MultiDataTrigger.Conditions>
+                                                        <MultiDataTrigger.EnterActions>
+                                                            <BeginStoryboard Name="Win11ISOSpin">
+                                                                <Storyboard RepeatBehavior="Forever">
+                                                                    <DoubleAnimation
+                                                                        Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                        From="0" To="360" Duration="0:0:1.4"/>
+                                                                </Storyboard>
+                                                            </BeginStoryboard>
+                                                        </MultiDataTrigger.EnterActions>
+                                                        <MultiDataTrigger.ExitActions>
+                                                            <StopStoryboard BeginStoryboardName="Win11ISOSpin"/>
+                                                        </MultiDataTrigger.ExitActions>
+                                                    </MultiDataTrigger>
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding IsVisible, RelativeSource={RelativeSource Self}}" Value="True"/>
+                                                            <Condition Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="Reverse"/>
+                                                        </MultiDataTrigger.Conditions>
+                                                        <MultiDataTrigger.EnterActions>
+                                                            <BeginStoryboard Name="Win11ISOSpinReverse">
+                                                                <Storyboard RepeatBehavior="Forever">
+                                                                    <DoubleAnimation
+                                                                        Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                        From="360" To="0" Duration="0:0:1.4"/>
+                                                                </Storyboard>
+                                                            </BeginStoryboard>
+                                                        </MultiDataTrigger.EnterActions>
+                                                        <MultiDataTrigger.ExitActions>
+                                                            <StopStoryboard BeginStoryboardName="Win11ISOSpinReverse"/>
+                                                        </MultiDataTrigger.ExitActions>
+                                                    </MultiDataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Name="WPFWin11ISOWorkingLabel"
+                                               Style="{StaticResource Win11StepTitle}"
+                                               Text="Working..."/>
+                                    <TextBlock Style="{StaticResource Win11StepSubtitle}"
+                                               Margin="0"
+                                               Text="This can take several minutes. Progress is written to the status log."/>
+                                </StackPanel>
+                            </TabItem>
+                        </TabControl>
+                        </Grid>
+                    </Border>
+
+                    <!-- ─── Status log ─── -->
+                    <Border Grid.Column="1" Style="{StaticResource BorderStyle}" Padding="20,16">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="{DynamicResource IconFontSize}"
+                                           Background="Transparent"
+                                           Foreground="{DynamicResource LabelboxForegroundColor}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBlock FontSize="{DynamicResource FontSize}"
+                                           FontWeight="Bold"
+                                           Background="Transparent"
+                                           Foreground="{DynamicResource LabelboxForegroundColor}"
+                                           VerticalAlignment="Center"
+                                           Text="Status Log"/>
                             </StackPanel>
-
-                    </StackPanel>
-
-                    <!-- Status Log (fills remaining height) -->
-                    <Grid Grid.Row="1" Margin="5">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <TextBlock Grid.Row="0"
-                                   FontSize="{DynamicResource FontSize}" FontWeight="Bold"
-                                   Foreground="{DynamicResource MainForegroundColor}"
-                                   Margin="0,0,0,4">
-                            狀態記錄
-                        </TextBlock>
-                        <TextBox Grid.Row="1"
-                                 Name="WPFWin11ISOStatusLog"
-                                 IsReadOnly="True"
-                                 TextWrapping="Wrap"
-                                 VerticalScrollBarVisibility="Visible"
-                                 VerticalAlignment="Stretch"
-                                 Padding="6"
-                                 Background="{DynamicResource MainBackgroundColor}"
-                                 Foreground="{DynamicResource MainForegroundColor}"
-                                 BorderBrush="{DynamicResource BorderColor}"
-                                 BorderThickness="1"
-                                 Text="已就緒。請選擇一個 Windows 11 ISO 以開始。"/>
-                    </Grid>
+                            <Border Grid.Row="1"
+                                    BorderBrush="{DynamicResource BorderColor}"
+                                    BorderThickness="0,1,0,0"
+                                    Padding="0,10,0,0">
+                                <!-- TextAlignment and Effect look redundant but are not: the shared TextBox
+                                     style stretches content alignment, which WPF renders as justified once
+                                     text wraps, and its drop shadow lands on the glyphs with no background
+                                     here to sit under. -->
+                                <TextBox Name="WPFWin11ISOStatusLog"
+                                         IsReadOnly="True"
+                                         TextWrapping="Wrap"
+                                         TextAlignment="Left"
+                                         FontFamily="{DynamicResource Win11LogFontFamily}"
+                                         VerticalScrollBarVisibility="Auto"
+                                         VerticalAlignment="Stretch"
+                                         Padding="0"
+                                         Background="Transparent"
+                                         Foreground="{DynamicResource MainForegroundColor}"
+                                         BorderThickness="0"
+                                         Effect="{x:Null}"
+                                         Text="已就緒。請選擇一個 Windows 11 ISO 以開始。"/>
+                            </Border>
+                        </Grid>
+                    </Border>
 
                 </Grid>
             </TabItem>
