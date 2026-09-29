@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.09.28
+    Version        : 26.09.29
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.09.28"
+$sync.version = "26.09.29"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -1641,7 +1641,7 @@ function Get-WinUtilTweaksStateReport {
     <#
     .SYNOPSIS
         Groups every config/tweaks.json entry's live applied state by category, reusing the same
-        detection Invoke-WPFGetInstalled uses to check the "Get Installed Tweaks" checkboxes.
+        detection Invoke-WPFGetInstalled uses to check the "Select Installed Tweaks" checkboxes.
     #>
 
     $categoryFieldNames = [ordered]@{
@@ -3629,7 +3629,8 @@ function Invoke-WinUtilISOModify {
         Invoke-WPFUIThread -ScriptBlock {
             $sync["WPFWin11ISOModifyButton"].IsEnabled = $false
         }
-        Set-WinUtilISOStep -Step "Working" -Label "Modifying install.wim"
+        $workingLabel = if ($InjectDrivers) { "Modifying install.wim" } else { "Preparing setup media" }
+        Set-WinUtilISOStep -Step "Working" -Label $workingLabel
 
         $modified = $false
         try {
@@ -4263,6 +4264,21 @@ function Invoke-WinUtilISOScript {
             return @($survivingFolders)
         }
 
+        $knownExitCode = @{
+            112 = "Disk is full"
+            5 = "Access denied"
+            2 = "File not found"
+            3 = "Path not found"
+            87 = "Invalid parameter"
+            1168 = "Element not found"
+            1392 = "File or directory is corrupted"
+            32 = "File in use / sharing violation"
+            21 = "Device not ready"
+            1460 = "Operation timed out"
+            1223 = "Operation cancelled by user"
+            50 = "Request not supported"
+        }
+
         function Invoke-WinUtilISODism {
             param (
                 [Parameter(Mandatory)][string[]]$Arguments,
@@ -4277,7 +4293,11 @@ function Invoke-WinUtilISOScript {
                         & $Logger "  dism[$Operation]: $line"
                     }
                 }
-                throw "DISM $Operation failed with exit code $exitCode."
+                if ($knownExitCode.ContainsKey($exitCode)) {
+                    throw "DISM $Operation failed with exit code $exitCode ($($knownExitCode[$exitCode]))."
+                } else {
+                    throw "DISM $Operation failed with exit code $exitCode."
+                }
             }
             if ($Operation -ne 'metadata') {
                 & $Logger "DISM $Operation completed."
@@ -4616,7 +4636,6 @@ $appxList
     Set-WinUtilRegistryValue 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager' 'ShippedWithReserves' 'REG_DWORD' '0'
     Set-WinUtilRegistryValue 'HKLM\SYSTEM\CurrentControlSet\Control\BitLocker' 'PreventDeviceEncryption' 'REG_DWORD' '1'
     Set-WinUtilRegistryValue 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Chat' 'ChatIcon' 'REG_DWORD' '3'
-    Set-WinUtilRegistryValue 'HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC' 'REG_DWORD' '1'
     Set-WinUtilRegistryValue 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 'REG_DWORD' '0'
     Set-WinUtilRegistryValue 'HKLM\SYSTEM\CurrentControlSet\Services\dmwappushservice' 'Start' 'REG_DWORD' '4'
     Set-WinUtilRegistryValue 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 'REG_DWORD' '1'
@@ -5430,6 +5449,9 @@ function Invoke-WinUtilTweaks {
 
     $action = if ($undo) { "Undo" } else { "Apply" }
     Write-WinUtilLog -Component "Tweaks" -Message "$action tweak: $CheckBox"
+    # The counter lives in this runspace, so an error a concurrent job logs from its own
+    # runspace cannot be charged to a toggle flipped on the UI thread
+    $errorsBefore = [int]$global:WinUtilJobErrorCount
 
     if ($undo) {
         $Values = @{
@@ -5488,7 +5510,12 @@ function Invoke-WinUtilTweaks {
             Remove-WinUtilProvisionedAPPX -PackageList $sync.configs.tweaks.$CheckBox.appx
         }
     }
-    Write-WinUtilLog -Component "Tweaks" -Message "$action tweak completed: $CheckBox"
+    $errorCount = [int]$global:WinUtilJobErrorCount - $errorsBefore
+    if ($errorCount -gt 0) {
+        Write-WinUtilLog -Level "WARN" -Component "Tweaks" -Message "$action tweak finished with $errorCount error(s): $CheckBox"
+    } else {
+        Write-WinUtilLog -Component "Tweaks" -Message "$action tweak completed: $CheckBox"
+    }
 }
 
 function Invoke-WinUtilUninstallPSProfile {
@@ -8921,7 +8948,10 @@ function Write-WinUtilLog {
         $null = $sync.LoggedErrors.Add("[$Component] $Message")
     }
 
-    if ($Level -eq "ERROR" -and -not $Detail -and $global:WinUtilIsJobWorker) {
+    # Global scope is per runspace, so this counter only ever sees errors logged by the
+    # runspace that owns it: a job worker reads its own, and a tweak on the UI thread reads the
+    # UI thread's
+    if ($Level -eq "ERROR" -and -not $Detail) {
         $global:WinUtilJobErrorCount++
     }
 
@@ -11911,7 +11941,7 @@ function Invoke-WPFUpdatessecurity {
         1. Disables driver offering through Windows Update
         2. Defers feature updates for 365 days
         3. Defers quality updates for 4 days
-        4. Prevents automatic restarts while a user is signed in
+        4. Configures automatic updates to notify when downloaded updates are ready to install
 
     #>
 
@@ -11970,13 +12000,16 @@ function Invoke-WPFUpdatessecurity {
         Remove-ItemProperty -Path $legacySettingsPath -Name $legacyValue -ErrorAction SilentlyContinue
     }
 
-    Write-Host "Preventing automatic restarts while users are signed in..."
-    Write-WinUtilLog -Component "Updates" -Message "Configuring scheduled automatic updates without restarting while users are signed in."
+    Write-Host "Configuring automatic updates to download and notify before installation..."
+    Write-WinUtilLog -Component "Updates" -Message "Configuring automatic updates to download and notify before installation."
 
     New-Item -Path $automaticUpdatePolicyPath -Force
-    # NoAutoRebootWithLoggedOnUsers only applies when automatic updates use option 4.
-    Set-ItemProperty -Path $automaticUpdatePolicyPath -Name "AUOptions" -Type DWord -Value 4
-    Set-ItemProperty -Path $automaticUpdatePolicyPath -Name "NoAutoRebootWithLoggedOnUsers" -Type DWord -Value 1
+
+    # Remove the previous scheduled-install reboot policy when switching to download-and-notify.
+    Remove-ItemProperty -Path $automaticUpdatePolicyPath -Name "NoAutoRebootWithLoggedOnUsers" -ErrorAction SilentlyContinue
+
+    # AUOptions 3 downloads updates and notifies before installation; it does not control restarts.
+    Set-ItemProperty -Path $automaticUpdatePolicyPath -Name "AUOptions" -Type DWord -Value 3
     Set-ItemProperty -Path $automaticUpdatePolicyPath -Name "AUPowerManagement" -Type DWord -Value 0
 
     Write-WinUtilLog -Component "Updates" -Message "Recommended Windows Update settings workflow completed."
@@ -18181,11 +18214,11 @@ $inputXML = @'
                             <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Vertical" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="5">
                                 <Label Content="建議選項：" FontSize="{DynamicResource FontSize}" VerticalAlignment="Center" Margin="2"/>
                                 <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,2,0,0">
-                                    <Button Name="WPFstandard" Content=" 標準 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Name="WPFminimal" Content=" 精簡 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Name="WPFAdvanced" Content=" 進階 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Name="WPFClearTweaksSelection" Content=" 清除 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Name="WPFGetInstalledTweaks" Content=" 取得已套用調校 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFstandard" Content=" Standard " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFminimal" Content=" Minimal " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFAdvanced" Content=" Advanced " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFClearTweaksSelection" Content=" Clear " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFGetInstalledTweaks" Content=" Select Installed Tweaks " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                     <Button Name="WPFAppxRemoval" Content=" AppX Removal " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                 </WrapPanel>
                             </StackPanel>
@@ -18265,7 +18298,7 @@ $inputXML = @'
                                         <TextBlock Text="- Defers feature updates for 365 days" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
                                         <TextBlock Text="- Defers quality updates for 4 days" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
                                         <TextBlock Text="- Excludes drivers from quality updates" TextWrapping="Wrap" Margin="0,0,0,7" Foreground="{DynamicResource MainForegroundColor}"/>
-                                        <TextBlock Text="- Prevents automatic restarts while a user is signed in" TextWrapping="Wrap" Margin="0,0,0,12" Foreground="{DynamicResource MainForegroundColor}"/>
+                                        <TextBlock Text="- Notifies when downloaded updates are ready to install" TextWrapping="Wrap" Margin="0,0,0,12" Foreground="{DynamicResource MainForegroundColor}"/>
                                         <TextBlock Text="Available on Windows Pro, Enterprise, and Education editions."
                                                    FontSize="11"
                                                    FontStyle="Italic"
@@ -18728,7 +18761,7 @@ $inputXML = @'
                                                       Foreground="{DynamicResource MainForegroundColor}"
                                                       IsChecked="False"
                                                       Cursor="Hand"
-                                                      ToolTip="Stages boot-storage drivers for Setup and adds all exported drivers to the selected install.wim edition in one DISM pass."/>
+                                                      ToolTip="Injects boot-storage drivers for Setup and adds exported drivers to the selected install.wim edition individually, skipping incompatible packages."/>
                                         </StackPanel>
                                     </Border>
 
@@ -18976,10 +19009,10 @@ $inputXML = @'
                             <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Vertical" Grid.Row="0" Grid.Column="0" Margin="5">
                                 <Label Content="選項：" FontSize="{DynamicResource FontSize}" VerticalAlignment="Center" Margin="2"/>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,2,0,0">
-                                    <Button Name="WPFDefaultAppxSelection" Content=" 預設 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Name="WPFGetInstalledAppx" Content=" 取得已安裝 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Name="WPFSelectAllAppx" Content=" 全選 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
-                                    <Button Name="WPFClearAppxSelection" Content=" 清除選取 " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFDefaultAppxSelection" Content=" Default " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFGetInstalledAppx" Content=" Select Installed " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFSelectAllAppx" Content=" Select All " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
+                                    <Button Name="WPFClearAppxSelection" Content=" Clear Selection " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                                 </StackPanel>
                             </StackPanel>
 
@@ -18987,13 +19020,13 @@ $inputXML = @'
                             </Grid>
 
                             <Border Grid.Row="2" Style="{StaticResource BorderStyle}" Margin="5,15,5,5">
-                                <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Horizontal" HorizontalAlignment="Left">
+                                <WrapPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Horizontal" HorizontalAlignment="Left">
                                     <TextBlock Padding="10" TextWrapping="Wrap" Foreground="{DynamicResource MainForegroundColor}">
                                         Note: Select the Windows AppX packages you wish to install or remove.
-                                        <LineBreak/>Install Selected registers a local manifest when available, then falls back to the Microsoft Store.
-                                        <LineBreak/>Remove Selected removes packages for the current user and all new user profiles.
+                                        <LineBreak/>'Install Selected' registers a local manifest for the current user when available, then falls back to the Microsoft Store.
+                                        <LineBreak/>'Remove Selected' removes packages for all users and stops new profiles from getting them by default.
                                     </TextBlock>
-                                </StackPanel>
+                                </WrapPanel>
                             </Border>
                         </Grid>
                     </ScrollViewer>
@@ -19481,10 +19514,11 @@ $scripts = @(
         reg.exe delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" /v DODownloadMode /f;
         reg.exe add "HKLM\Software\Policies\Microsoft\Windows\OneDrive" /v DisableFileSyncNGSC /t REG_DWORD /d 0 /f;
         reg.exe add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f;
-        $services = @{ BITS = 'Manual'; wuauserv = 'Manual'; UsoSvc = 'Automatic'; WaaSMedicSvc = 'Manual' };
+        $services = @{ BITS = 'Manual'; wuauserv = 'Manual'; UsoSvc = 'Automatic' };
         foreach ($name in $services.Keys) {
-            Set-Service -Name $name -StartupType $services[$name] -ErrorAction SilentlyContinue;
+            Set-Service -Name $name -StartupType $services[$name] -ErrorAction Continue;
         }
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc' -Name 'Start' -Value 3 -Type DWord -ErrorAction Continue;
     };
     {
         reg.exe add "HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\Education" /f;
