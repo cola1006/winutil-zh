@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.10.20
+    Version        : 26.10.21
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.10.20"
+$sync.version = "26.10.21"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -937,6 +937,9 @@ function Find-TweaksByNameOrDescription {
                                     $checkboxContentStr = [string]$checkboxContent
                                     $checkboxToolTipStr = [string]$checkboxToolTip
 
+                                    # Match the preset key but not the "Preset key: " label added by Get-WinUtilEntryToolTip
+                                    $checkboxToolTipStr = $checkboxToolTipStr.Replace("Preset key: ", "")
+
                                     # Use IndexOf for literal matching (no wildcard interpretation)
                                     $contentMatch = $checkboxContentStr.IndexOf($searchTerm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
                                     $toolTipMatch = $checkboxToolTipStr.IndexOf($searchTerm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
@@ -1535,7 +1538,10 @@ function Get-WinUtilSelectedPackages {
          [object] $PackageList,
 
          [Parameter(Mandatory = $true)]
-         [string] $Preference
+         [string] $Preference,
+
+         [ValidateSet("Install", "Uninstall")]
+         [string] $Action = "Install"
      )
 
     # A single package has no meaningful percentage to show
@@ -1556,12 +1562,22 @@ function Get-WinUtilSelectedPackages {
             $PackageId
         )
 
-        if ([string]::IsNullOrWhiteSpace([string]$PackageId) -or $PackageId -eq "na") {
-            return
+        # A config field may hold several IDs separated by ";" (e.g. a dependency;the package).
+        # Detection splits the same way, so install and detection agree on what gets installed.
+        $ids = [string]$PackageId -split ";"
+        if ($Action -eq "Uninstall") {
+            # Detection identifies the last ID as the app; preceding IDs are dependencies.
+            $ids = @($ids[-1])
         }
+        foreach ($id in $ids) {
+            $id = $id.Trim()
+            if ([string]::IsNullOrWhiteSpace($id) -or $id -eq "na") {
+                continue
+            }
 
-        if (-not $Target.Contains($PackageId)) {
-            $null = $Target.Add($PackageId)
+            if (-not $Target.Contains($id)) {
+                $null = $Target.Add($id)
+            }
         }
     }
 
@@ -1635,6 +1651,35 @@ Function Get-WinUtilToggleStatus {
         $sync.ToggleStatusCache[$ToggleSwitch] = $true
     }
     return $true
+}
+
+function Get-WinUtilTweakDisplayName {
+    <#
+        .SYNOPSIS
+            Returns the user-facing label for a tweak key
+
+        .DESCRIPTION
+            Status text should read the way the checkbox does ("Activity
+            History - Disable"), not the preset key ("WPFTweaksActivity"). Falls
+            back to the key itself when configs are unavailable (headless runs,
+            tests) or the entry has no label, so callers need no existence
+            checks. Pure data lookup, safe to call from a job worker.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Key
+    )
+
+    $entry = $null
+    if ($null -ne $sync -and $null -ne $sync.configs -and $null -ne $sync.configs.tweaks) {
+        $entry = $sync.configs.tweaks.$Key
+    }
+
+    if ($null -ne $entry -and -not [string]::IsNullOrWhiteSpace($entry.Content)) {
+        return $entry.Content
+    }
+
+    return $Key
 }
 
 function Get-WinUtilTweaksStateReport {
@@ -1830,13 +1875,25 @@ function Initialize-InstallAppEntry {
         $fallback.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, "ToggleButtonOnColor")
         [void]$icon.Children.Add($fallback)
         if ($app.link) {
-            $fallback.Visibility = "Collapsed"
             $logo = New-Object Windows.Controls.Image
             $logo.Stretch = [Windows.Media.Stretch]::Uniform
-            $logo.Source = "https://www.google.com/s2/favicons?sz=64&domain_url=$([uri]::EscapeDataString($app.link))"
+            $fallback.Visibility = "Collapsed"
             $logo.Add_ImageFailed($handlers.ImageFailed)
 
             [void]$icon.Children.Add($logo)
+            try {
+                # Avoid reusing a cached WIC image from an earlier window in this process.
+                # Keep downloading in WPF so icons do not occupy the shared job pool.
+                $bitmap = [Windows.Media.Imaging.BitmapImage]::new()
+                $bitmap.BeginInit()
+                $bitmap.CreateOptions = [Windows.Media.Imaging.BitmapCreateOptions]::IgnoreImageCache
+                $bitmap.UriSource = [uri]"https://www.google.com/s2/favicons?sz=64&domain_url=$([uri]::EscapeDataString($app.link))"
+                $bitmap.EndInit()
+                $logo.Source = $bitmap
+            } catch {
+                $logo.Visibility = "Collapsed"
+                $fallback.Visibility = "Visible"
+            }
         }
         [void]$contentPanel.Children.Add($icon)
 
@@ -2227,11 +2284,19 @@ function Install-WinUtilAPPX {
     }
 
     if ([string]::IsNullOrWhiteSpace($StoreId)) {
+        # A package with no local manifest and no Store ID cannot be installed. Report it as a
+        # result rather than throwing so the remaining selected packages still run and the job
+        # summary names this one; Complete-WinUtilPackageRun fails the job on the Failed outcome.
         $errorMessage = "Unable to install $Name because no local manifest or Microsoft Store ID is available."
         Write-WinUtilLog -Level "ERROR" -Component "AppX" -Message $errorMessage
-        $exception = [System.InvalidOperationException]::new($errorMessage)
-        $exception.Data["WinUtilErrorReported"] = $true
-        throw $exception
+        return [pscustomobject]@{
+            Package  = $Name
+            Manager  = "appx"
+            Action   = "Install"
+            ExitCode = 1
+            Outcome  = "Failed"
+            Detail   = $errorMessage
+        }
     }
 
     Write-WinUtilLog -Component "AppX" -Message "No usable local manifest found for $Name. Installing Microsoft Store product $StoreId."
@@ -2396,6 +2461,156 @@ function Install-WinUtilProgramChoco {
     }
 }
 
+Function Get-WinUtilPowerShellVersion {
+    param ([string]$Path)
+    & $Path -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+}
+
+Function Get-WinUtilPowerShellArchitecture {
+    param ([string]$Path)
+    & $Path -NoLogo -NoProfile -Command '[System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()'
+}
+
+Function Test-WinUtilPowerShellMSIUpgradeAllowed {
+    # WinGet has no structured pin-list output, and list filters are not honored by all versions.
+    # Conservatively leave upgrades to WinGet whenever any pins exist or the check fails.
+    try {
+        $pinOutput = @(& winget pin list --accept-source-agreements --disable-interactivity 2>&1)
+        if ($LASTEXITCODE -ne 0 -or $pinOutput.Count -eq 0) { return $false }
+        $text = $pinOutput -join "`n"
+        $text = $text -replace '\x1B\[[0-9;]*[A-Za-z]', ''
+        return $text -notmatch '(?m)^\s*-{3,}\s*$'
+    } catch {
+        return $false
+    }
+}
+
+Function Update-WinUtilPowerShellMSI {
+    $candidates = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*","HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.WindowsInstaller -eq 1 -and
+            $_.DisplayName -match '^PowerShell\s+7(?:\.\d+){0,3}(?:-(?:x64|x86|arm64))?(?:\s|$)' -and
+            $_.DisplayName -notmatch "preview|daily"
+        }
+    $locations = @()
+    foreach ($candidate in $candidates) {
+        $location = $candidate.InstallLocation
+        if (-not $location) {
+            # The official MSI registers its location here, not in the uninstall record.
+            $registration = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\PowerShellCore\InstalledVersions\*","HKLM:\SOFTWARE\WOW6432Node\Microsoft\PowerShellCore\InstalledVersions\*" -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProductCode -and $_.ProductCode -eq $candidate.PSChildName } |
+                Select-Object -First 1
+            $location = $registration.InstallLocation
+        }
+        if ($location -and (Test-Path -LiteralPath (Join-Path $location "pwsh.exe"))) {
+            $location = ([string]$location).TrimEnd([char[]]'\/')
+            if ($locations -notcontains $location) { $locations += $location }
+        }
+    }
+
+    if ($locations.Count -eq 0) {
+        return [pscustomobject]@{
+            Outcome = "NotInstalled"
+            Detail = "PowerShell is not installed through MSI"
+        }
+    }
+
+    if ($locations.Count -gt 1) {
+        $detail = "Multiple stable PowerShell MSI installations detected; upgrade each installation manually. No direct MSI upgrade was attempted."
+        Write-WinUtilLog -Level "ERROR" -Component "Package" -Message $detail
+        return [pscustomobject]@{ Outcome = "Failed"; ExitCode = -1; Detail = $detail }
+    }
+    $msi = [pscustomobject]@{ InstallLocation = $locations[0] }
+
+    if (-not (Test-WinUtilPowerShellMSIUpgradeAllowed)) {
+        Write-WinUtilLog -Component "Package" -Message "Skipping direct PowerShell MSI upgrade: WinGet pins exist or their state could not be verified."
+        return [pscustomobject]@{
+            Outcome = "Skipped"
+            Detail = "WinGet pins exist or their state could not be verified; MSI upgrade skipped"
+        }
+    }
+
+    try {
+        $installed = Get-WinUtilPowerShellVersion (Join-Path $msi.InstallLocation "pwsh.exe")
+        $release = Invoke-RestMethod "https://api.github.com/repos/PowerShell/PowerShell/releases/latest" -TimeoutSec 30
+        $latest = ([string]$release.tag_name).TrimStart("v")
+
+        if ([version]$installed -ge [version]$latest) {
+            Write-WinUtilLog -Component "Package" -Message "PowerShell is already current ($installed)"
+            return [pscustomobject]@{
+                Outcome = "Skipped"
+                Detail = "PowerShell is already current"
+            }
+        }
+
+        $arch = ([string](Get-WinUtilPowerShellArchitecture (Join-Path $msi.InstallLocation "pwsh.exe"))).Trim().ToLowerInvariant()
+        if ($arch -notin @("x64", "x86", "arm64")) {
+            throw "Unsupported installed PowerShell architecture: $arch"
+        }
+        $asset = $release.assets |
+            Where-Object { $_.name -match "^PowerShell-.*-win-$arch\.msi$" } |
+            Select-Object -First 1
+
+        if (-not $asset) {
+            throw "No PowerShell MSI found for $arch"
+        }
+
+        $msiPath = Join-Path $env:TEMP "PowerShell-$arch-$([guid]::NewGuid()).msi"
+
+        try {
+            Invoke-WebRequest $asset.browser_download_url -OutFile $msiPath -UseBasicParsing -TimeoutSec 300
+
+            if ($asset.digest) {
+                $hash = (Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($hash -ne $asset.digest.Replace("sha256:", "").ToLowerInvariant()) {
+                    throw "PowerShell MSI SHA256 verification failed"
+                }
+            }
+
+            $signature = Get-AuthenticodeSignature -LiteralPath $msiPath
+            if (
+                $signature.Status -ne "Valid" -or
+                -not $signature.SignerCertificate -or
+                $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)'
+            ) {
+                throw "PowerShell MSI signature verification failed"
+            }
+
+            $install = Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -PassThru
+
+            if ($install.ExitCode -notin @(0,3010,1641)) {
+                throw "PowerShell MSI installation failed with exit code $($install.ExitCode)"
+            }
+
+            $detail = switch ($install.ExitCode) {
+                3010 { "PowerShell MSI upgrade succeeded; a restart is required to finish" }
+                1641 { "PowerShell MSI upgrade succeeded; the installer started a restart" }
+                default { "PowerShell MSI upgrade succeeded" }
+            }
+            Write-WinUtilLog -Component "Package" -Message "$detail (exit code $($install.ExitCode))"
+            if ($install.ExitCode -in @(3010, 1641)) { Write-Host $detail }
+
+            return [pscustomobject]@{
+                Outcome = "Succeeded"
+                ExitCode = $install.ExitCode
+                Detail = $detail
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $msiPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        Write-WinUtilLog -Level "ERROR" -Component "Package" -Message "PowerShell MSI upgrade failed: $($_.Exception.Message)"
+
+        return [pscustomobject]@{
+            Outcome = "Failed"
+            ExitCode = -1
+            Detail = "PowerShell MSI upgrade failed: $($_.Exception.Message)"
+        }
+    }
+}
+
 Function Install-WinUtilProgramWinget {
     <#
 
@@ -2430,13 +2645,12 @@ Function Install-WinUtilProgramWinget {
         -1978335135 = "already installed"
         -1978335189 = "no applicable update"
     }
+
     # The installer worked and wants a restart to finish. Windows reports that as its own exit
     # code rather than as zero, and treating it as a failure marks working installs as broken.
     $rebootExitCodes = @{
         3010 = "installed, a restart is needed to finish"
         1641 = "installed, the installer started a restart"
-        # WinGet's own equivalents. -1978334966 is deliberately absent: it means a reboot is
-        # required before the install can proceed, which is not a completed install.
         -1978334967 = "installed, a restart is needed to finish"
         -1978334965 = "installed, the installer started a restart"
     }
@@ -2447,7 +2661,27 @@ Function Install-WinUtilProgramWinget {
         }
 
         $upgradeAll = $Action -eq "Upgrade" -and $program -eq "all"
+
+        if (($Action -in @("Install", "Upgrade") -and $program -eq "Microsoft.PowerShell") -or $upgradeAll) {
+            $result = Update-WinUtilPowerShellMSI
+
+            if ($result.Outcome -ne "NotInstalled") {
+                [pscustomobject]@{
+                    Package  = "Microsoft.PowerShell"
+                    Manager  = "msi"
+                    Action   = $Action
+                    ExitCode = $result.ExitCode
+                    Outcome  = $result.Outcome
+                    Detail   = $result.Detail
+                }
+
+                # Upgrade All must still update the other packages after reporting the MSI outcome.
+                if (-not $upgradeAll) { continue }
+            }
+        }
+
         $source = if ($upgradeAll) { "all configured sources" } else { "winget" }
+
         if (-not $upgradeAll -and $program.StartsWith("msstore:", [System.StringComparison]::OrdinalIgnoreCase)) {
             $source = "msstore"
             $program = $program.Substring("msstore:".Length)
@@ -2460,9 +2694,9 @@ Function Install-WinUtilProgramWinget {
         $exitCode = -1
 
         $arguments = switch ($Action) {
-            "Uninstall" { @("uninstall", "--id", $program, "--source", $source, "--silent") }
-            # --include-unknown because the scan that found these ran with it: without it winget
-            # refuses every package whose installed version it could not read
+            "Uninstall" {
+                @("uninstall", "--id", $program, "--source", $source, "--silent")
+            }
             "Upgrade" {
                 if ($upgradeAll) {
                     @("upgrade", "--all", "--accept-package-agreements", "--accept-source-agreements", "--include-unknown", "--silent")
@@ -2470,7 +2704,9 @@ Function Install-WinUtilProgramWinget {
                     @("upgrade", "--id", $program, "--accept-package-agreements", "--accept-source-agreements", "--source", $source, "--include-unknown", "--silent")
                 }
             }
-            default     { @("install", "--id", $program, "--accept-package-agreements", "--accept-source-agreements", "--source", $source, "--silent") }
+            default {
+                @("install", "--id", $program, "--accept-package-agreements", "--accept-source-agreements", "--source", $source, "--silent")
+            }
         }
 
         $process = Start-Process -FilePath winget -ArgumentList $arguments -NoNewWindow -Wait -PassThru
@@ -2494,21 +2730,20 @@ Function Install-WinUtilProgramWinget {
             }
         } else {
             $outcome = "Failed"
-            # The client module reports the same failure as a bare HRESULT, so the hex form and
-            # Microsoft's own list serve both paths
             $detail = "WinGet reported 0x{0:X8}. See https://learn.microsoft.com/windows/package-manager/winget/returnCodes" -f $exitCode
         }
 
         $level = if ($outcome -eq "Failed") { "ERROR" } else { "INFO" }
+
         Write-WinUtilLog -Level $level -Component "Package" -Message "$Action winget package $($outcome.ToLowerInvariant()): $program ($detail)"
 
         [pscustomobject]@{
-            Package = $program
-            Manager = "winget"
-            Action = $Action
+            Package  = $program
+            Manager  = "winget"
+            Action   = $Action
             ExitCode = $exitCode
-            Outcome = $outcome
-            Detail = $detail
+            Outcome  = $outcome
+            Detail   = $detail
         }
     }
 }
@@ -2924,6 +3159,20 @@ Function Invoke-WinUtilCurrentSystem {
                 Write-Output $_.Key
             }
         }
+
+        # Apps without a Chocolatey package are installed through WinGet (see Get-WinUtilSelectedPackages),
+        # so check those against one winget list
+        $wingetFallbackKeys = @($sync.configs.applicationsHashtable.GetEnumerator() | Where-Object {
+            ([string]::IsNullOrWhiteSpace([string]$_.Value.choco) -or $_.Value.choco -eq "na") -and
+            -not ([string]::IsNullOrWhiteSpace([string]$_.Value.winget) -or $_.Value.winget -eq "na")
+        } | ForEach-Object { $_.Key })
+        if ($wingetFallbackKeys.Count -gt 0 -and (Test-WinUtilPackageManager -winget) -eq "installed") {
+            try {
+                Invoke-WinUtilCurrentSystem -CheckBox "winget" | Where-Object { $_ -in $wingetFallbackKeys }
+            } catch {
+                Write-Warning "Could not check apps installed through WinGet: $($_.Exception.Message)"
+            }
+        }
     }
 
     if ($checkbox -eq "winget") {
@@ -2939,14 +3188,24 @@ Function Invoke-WinUtilCurrentSystem {
         }
         $installedProgramText = $installedProgramOutput -join "`n"
 
+        # winget pads each column to its widest value plus one space, so the row with the widest Name or Id
+        # has only one space next to its Id. Take the Id column position from the header above the dashes.
+        $idColumnStart = 0
+        if ($installedProgramText -match '(?m)^(\S+[^\S\r\n]+)\S[^\r\n]*\r?\n-{3,}') {
+            $idColumnStart = $Matches[1].Length
+        }
+
         $sync.configs.applicationsHashtable.GetEnumerator() | ForEach-Object {
             $packageId = (($_.Value.winget -split ";")[-1] -replace "^msstore:", "").Trim()
             if ([string]::IsNullOrWhiteSpace($packageId) -or $packageId -eq "na") {
                 return
             }
 
-            $packagePattern = "(?im)[^\S\r\n]{2,}$([regex]::Escape($packageId))(?=[^\S\r\n]{2,}|$)"
-            if ($installedProgramText -match $packagePattern) {
+            $escapedPackageId = [regex]::Escape($packageId)
+            $packagePattern = "(?im)[^\S\r\n]{2,}$escapedPackageId(?=[^\S\r\n]{2,}|$)"
+            # Skip rows whose Name has combining marks or emoji: they are more characters than columns and shift the offset
+            $idColumnPattern = "(?im)(?<=^[^\r\n\p{M}\p{Cs}\p{Cf}]{$($idColumnStart - 1)}[^\S\r\n])$escapedPackageId(?=[^\S\r\n]|$)"
+            if ($installedProgramText -match $packagePattern -or ($idColumnStart -and $installedProgramText -match $idColumnPattern)) {
                 Write-Output $_.Key
             }
         }
@@ -3094,16 +3353,27 @@ public class Win32 {
 function Invoke-WinUtilFeatureInstall ($CheckBox) {
     Write-WinUtilLog -Component "Feature" -Message "Applying feature action: $CheckBox"
 
+    $featureFailed = $false
     if ($sync.configs.feature.$CheckBox.feature) {
         foreach ($feature in $sync.configs.feature.$CheckBox.feature) {
             Write-Host "Installing $feature"
             Write-WinUtilLog -Component "Feature" -Message "Enabling Windows optional feature: $feature"
-            Enable-WindowsOptionalFeature -Online -FeatureName $feature -All -NoRestart -ErrorAction Stop
-            Write-WinUtilLog -Component "Feature" -Message "Enabled Windows optional feature: $feature"
+            try {
+                Enable-WindowsOptionalFeature -Online -FeatureName $feature -All -NoRestart -ErrorAction Stop
+                Write-WinUtilLog -Component "Feature" -Message "Enabled Windows optional feature: $feature"
+            } catch {
+                $featureFailed = $true
+                # A feature missing on this edition (e.g. Windows Sandbox on Home) must not
+                # abort the remaining selected features
+                Write-Warning "Unable to enable feature $feature`: $($_.Exception.Message)"
+                Write-WinUtilLog -Level "ERROR" -Component "Feature" -Message "Unable to enable feature $feature`: $($_.Exception.Message)"
+            }
         }
     }
 
-    if ($sync.configs.feature.$CheckBox.InvokeScript) {
+    if ($featureFailed) {
+        Write-WinUtilLog -Level "WARN" -Component "Feature" -Message "Skipping dependent scripts after an optional feature failed: $CheckBox"
+    } elseif ($sync.configs.feature.$CheckBox.InvokeScript) {
         foreach ($script in $sync.configs.feature.$CheckBox.InvokeScript) {
             Write-Host "Running Script for $CheckBox"
             Write-WinUtilLog -Component "Feature" -Message "Running feature script for: $CheckBox"
@@ -3404,6 +3674,36 @@ function Get-WinUtilEditionIdFromName {
     }
 }
 
+function Get-WinUtilImageEditionId {
+    <#
+    .SYNOPSIS
+        Resolves the locale-independent setup edition id for a Windows image.
+
+    .DESCRIPTION
+        Reads EditionId from the image metadata first, which reports the same
+        canonical value (Professional, Core, ...) in every ISO language, and
+        falls back to the English display-name map when the metadata cannot be
+        read. Never throws: an unresolvable edition yields an empty string so
+        the caller skips sources\ei.cfg instead of writing a wrong value.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ImagePath,
+        [Parameter(Mandatory)][int]$ImageIndex,
+        [string]$EditionName
+    )
+
+    try {
+        $detail = Get-WindowsImage -ImagePath $ImagePath -Index $ImageIndex -ErrorAction Stop
+        if ($detail -and $detail.EditionId) {
+            return [string]$detail.EditionId
+        }
+    } catch {
+        Write-Verbose "Could not read image metadata for index ${ImageIndex}: $_"
+    }
+
+    return Get-WinUtilEditionIdFromName -EditionName $EditionName
+}
+
 function Invoke-WinUtilISOBrowse {
     Add-Type -AssemblyName System.Windows.Forms
 
@@ -3526,12 +3826,30 @@ function Invoke-WinUtilISOMountAndVerify {
             $sync["Win11ISOWimPath"]     = $activeWim
             $sync["Win11ISOImagePath"]   = $isoPath
 
+            # Resolve the default edition here, off the UI thread: image metadata
+            # carries the locale-independent EditionId, so a French
+            # "Professionnel" image still preselects Pro instead of falling back
+            # to index 0 (Famille). The English display-name match remains as a
+            # fallback for images whose metadata cannot be read.
+            $defaultEditionListIndex = 0
+            $listIndex = 0
+            foreach ($img in @($imageInfo)) {
+                $candidateId = Get-WinUtilImageEditionId -ImagePath $activeWim -ImageIndex $img.ImageIndex -EditionName $img.ImageName
+                $candidateItem = "$($img.ImageIndex): $($img.ImageName)"
+                if (($candidateId -eq 'Professional') -or ([string]::IsNullOrEmpty($candidateId) -and $candidateItem -match "Windows 11 Pro(?![\w ])")) {
+                    $defaultEditionListIndex = $listIndex
+                    break
+                }
+                $listIndex++
+            }
+
             Invoke-WPFUIThread -Parameters @{
                 DriveLetter = $driveLetter
                 ImageFileName = Split-Path $activeWim -Leaf
                 ImageInfo = $imageInfo
+                DefaultEditionListIndex = $defaultEditionListIndex
             } -ScriptBlock {
-                param($DriveLetter, $ImageFileName, $imageInfo)
+                param($DriveLetter, $ImageFileName, $imageInfo, $DefaultEditionListIndex)
 
                 $sync["WPFWin11ISOMountDriveLetter"].Text = $DriveLetter
                 $sync["WPFWin11ISOImageFile"].Text        = $ImageFileName
@@ -3540,13 +3858,7 @@ function Invoke-WinUtilISOMountAndVerify {
                     [void]$sync["WPFWin11ISOEditionComboBox"].Items.Add("$($img.ImageIndex): $($img.ImageName)")
                 }
                 if ($sync["WPFWin11ISOEditionComboBox"].Items.Count -gt 0) {
-                    $proIndex = -1
-                    for ($i = 0; $i -lt $sync["WPFWin11ISOEditionComboBox"].Items.Count; $i++) {
-                        if ($sync["WPFWin11ISOEditionComboBox"].Items[$i] -match "Windows 11 Pro(?![\w ])") {
-                            $proIndex = $i; break
-                        }
-                    }
-                    $sync["WPFWin11ISOEditionComboBox"].SelectedIndex = if ($proIndex -ge 0) { $proIndex } else { 0 }
+                    $sync["WPFWin11ISOEditionComboBox"].SelectedIndex = [Math]::Min($DefaultEditionListIndex, $sync["WPFWin11ISOEditionComboBox"].Items.Count - 1)
                 }
                 $sync["WPFWin11ISOVerifyResultPanel"].Visibility = "Visible"
                 Set-WinUtilISOStep -Step "Modify"
@@ -3659,7 +3971,7 @@ function Invoke-WinUtilISOModify {
                 -InjectCurrentSystemDrivers $InjectDrivers `
                 -InstallImagePath $localWim `
                 -InstallImageIndex $SelectedWimIndex `
-                -InstallEditionId (Get-WinUtilEditionIdFromName -EditionName $SelectedEditionName) `
+                -InstallEditionId (Get-WinUtilImageEditionId -ImagePath $localWim -ImageIndex $SelectedWimIndex -EditionName $SelectedEditionName) `
                 -Log {
                     param($m)
                     if ($m -like "Warning:*") {
@@ -3686,7 +3998,7 @@ function Invoke-WinUtilISOModify {
 
             Step-WinUtilJob -Status "Dismounting source ISO..." -Percent 80
             Write-WinUtilISOLog "Dismounting original ISO..."
-            Dismount-DiskImage -ImagePath $isoPath
+            Dismount-DiskImage -ImagePath $isoPath -ErrorAction Stop
 
             $sync["Win11ISOWorkDir"]     = $workDir
             $sync["Win11ISOContentsDir"] = $isoContents
@@ -3711,7 +4023,7 @@ function Invoke-WinUtilISOModify {
                     $mountedISO = Get-DiskImage -ImagePath $isoPath
                     if ($mountedISO -and $mountedISO.Attached) {
                         Write-WinUtilISOLog "Cleaning up: dismounting source ISO..."
-                        Dismount-DiskImage -ImagePath $isoPath
+                        Dismount-DiskImage -ImagePath $isoPath -ErrorAction Stop
                     }
                 } catch { Write-WinUtilISOLog -Level "WARN" -Message "Could not dismount ISO during cleanup: $_" }
 
@@ -5449,6 +5761,10 @@ function Invoke-WinUtilTweaks {
 
     $action = if ($undo) { "Undo" } else { "Apply" }
     Write-WinUtilLog -Component "Tweaks" -Message "$action tweak: $CheckBox"
+    # The next status read must hit the registry, not a value cached before this change
+    if ($sync.ToggleStatusCache) {
+        $sync.ToggleStatusCache.Remove($CheckBox)
+    }
     # The counter lives in this runspace, so an error a concurrent job logs from its own
     # runspace cannot be charged to a toggle flipped on the UI thread
     $errorsBefore = [int]$global:WinUtilJobErrorCount
@@ -5472,13 +5788,18 @@ function Invoke-WinUtilTweaks {
         $sync.configs.tweaks.$CheckBox.service | ForEach-Object {
             $changeservice = $true
 
-        # The check for !($undo) is required, without it the script will throw an error for accessing unavailable member, which's the 'OriginalService' Property
-            if ($KeepServiceStartup -AND !($undo)) {
+            # KeepServiceStartup protects a service the user (or another tool) changed away from
+            # the value this tweak expects. Undo uses the same rule in reverse: only restore
+            # OriginalType when the service still sits at the StartupType this tweak applies.
+            # This compares current state, not history: a service already at StartupType
+            # before apply is indistinguishable from one changed by this tweak.
+            $expectedType = if ($undo) { $psitem.StartupType } else { $psitem.$($values.OriginalService) }
+            if ($KeepServiceStartup) {
                 $serviceName = $psitem.Name
                 try {
                     # Check if the service exists
                     $service = Get-Service -Name $serviceName -ErrorAction Stop
-                    if(!($service.StartType.ToString() -eq $psitem.$($values.OriginalService))) {
+                    if(!($service.StartType.ToString() -eq $expectedType)) {
                         $changeservice = $false
                     }
                 } catch {
@@ -6087,6 +6408,10 @@ function Save-WinUtilFile {
     <#
     .SYNOPSIS
         Downloads a file and reports transfer progress.
+
+    .PARAMETER ProgressCallback
+        Called with the percentage completed and the total size in bytes. The size is -1 when
+        the server sends no Content-Length, in which case only the final 100% call is made.
     #>
     param(
         [Parameter(Mandatory)]
@@ -6120,14 +6445,14 @@ function Save-WinUtilFile {
             if ($totalBytes -gt 0) {
                 $percent = [Math]::Min(100, [int](($downloadedBytes / $totalBytes) * 100))
                 if ($percent -ne $lastPercent) {
-                    & $ProgressCallback $percent
+                    & $ProgressCallback $percent $totalBytes
                     $lastPercent = $percent
                 }
             }
         }
 
         if ($lastPercent -ne 100) {
-            & $ProgressCallback 100
+            & $ProgressCallback 100 $totalBytes
         }
     }
     finally {
@@ -6369,6 +6694,28 @@ function Set-WinUtilRegistry {
 
     try {
         if(!(Test-Path 'HKU:\')) {New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS | Out-Null}
+
+        if ($Value -eq "<RemoveEntry>") {
+            # A value that is not there is already in the requested state. Reporting it as an
+            # error made undoing a tweak that was never applied fail, and the key would otherwise
+            # be created below only to have nothing removed from it. Only a missing key or value
+            # counts as absent; an access or provider failure still reaches the handlers below.
+            $valueExists = $true
+            try {
+                Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop | Out-Null
+            } catch [System.Management.Automation.PSArgumentException] {
+                # The registry provider uses PSArgumentException when a named value is absent
+                $valueExists = $false
+            } catch [System.Management.Automation.ItemNotFoundException] {
+                $valueExists = $false
+            }
+
+            if (-not $valueExists) {
+                Write-Host "$Path\$Name is already absent"
+                Write-WinUtilLog -Component "Registry" -Message "Registry value $Path\$Name is already absent; nothing to remove"
+                return
+            }
+        }
 
         If (!(Test-Path $Path)) {
             Write-Host "$Path was not found. Creating..."
@@ -8546,7 +8893,10 @@ function Update-WinUtilSelections {
             throw "Unknown selection key '$cbkey'."
         }
 
-        $nextSelections[$listName].Add($cbkey)
+        # Replacement imports must also behave like checkbox selections, not repeated actions.
+        if ($nextSelections[$listName] -notcontains $cbkey) {
+            $nextSelections[$listName].Add($cbkey)
+        }
     }
 
     $validSelectionCount = ($nextSelections.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
@@ -10113,8 +10463,10 @@ function Invoke-WPFImpex {
                         return
                     }
                     $jsonFile = $allConfs | ConvertTo-Json
-                    $jsonFile | Out-File $Config -Force
-                    "iex ""& { `$(irm https://christitus.com/win) } -Config '$Config'""" | Set-Clipboard
+                    $jsonFile | Out-File -LiteralPath $Config -Force
+                    # Keep the path literal when the copied command is pasted into PowerShell.
+                    $escapedConfig = [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Config)
+                    "& ([ScriptBlock]::Create((Invoke-RestMethod 'https://christitus.com/win'))) -Config '$escapedConfig'" | Set-Clipboard
                 }
             } catch {
                 Write-Error "An error occurred while exporting: $_"
@@ -10128,7 +10480,7 @@ function Invoke-WPFImpex {
                         if ($Config -match '^https?://') {
                             $jsonFile = (Invoke-WebRequest "$Config" -ErrorAction Stop).Content | ConvertFrom-Json
                         } else {
-                            $jsonFile = Get-Content $Config -ErrorAction Stop | ConvertFrom-Json
+                            $jsonFile = Get-Content -LiteralPath $Config -ErrorAction Stop | ConvertFrom-Json
                         }
                     } catch {
                         $message = "Failed to load the JSON file from the specified path or URL: $_"
@@ -10336,8 +10688,15 @@ function Invoke-WPFOOSU {
         Write-WinUtilLog -Component "OOSU" -Message "Downloading O&O ShutUp10++."
 
         Save-WinUtilFile -Uri "https://dl5.oo-software.com/files/ooshutup10/OOSU10.exe" -DestinationPath $DownloadPath -ProgressCallback {
-            param($percent)
-            Step-WinUtilJob -Status "Downloading O&O ShutUp10++ ($percent%)" -Percent $percent
+            param($percent, $totalBytes)
+
+            # The server may omit Content-Length, in which case only the percentage is known
+            $progress = if ($totalBytes -gt 0) {
+                "$percent% of $([math]::Round($totalBytes / 1MB)) MB"
+            } else {
+                "$percent%"
+            }
+            Step-WinUtilJob -Status "Downloading O&O ShutUp10++ ($progress)" -Percent $percent
         }
 
         Step-WinUtilJob -Status "Launching O&O ShutUp10++" -Percent 100
@@ -10567,12 +10926,19 @@ function Invoke-WPFSelectedCheckboxesUpdate ($type, $checkboxName) {
 
     $selectionChanged = $false
     if ($type -eq "Add") {
-        if (-not $sync.$listName.Contains($checkboxName)) {
+        if ($sync.$listName -notcontains $checkboxName) {
             $sync.$listName.Add($checkboxName)
             $selectionChanged = $true
         }
     } else {
-        $selectionChanged = $sync.$listName.Remove($checkboxName)
+        # Imported keys are validated case-insensitively, so checkbox events must
+        # use the same comparison even when the imported spelling differs.
+        for ($index = $sync.$listName.Count - 1; $index -ge 0; $index--) {
+            if ($sync.$listName[$index] -eq $checkboxName) {
+                $sync.$listName.RemoveAt($index)
+                $selectionChanged = $true
+            }
+        }
     }
 
     if ($listName -eq "selectedApps" -and $selectionChanged) {
@@ -10874,7 +11240,8 @@ function Invoke-WPFtweaksbutton {
     }
 
     foreach ($tweak in $tweaksToRun) {
-      Step-WinUtilJob -Status "Applying $tweak ($($completedSteps + 1)/$totalSteps)" -Percent ([int](($completedSteps / $totalSteps) * 100))
+      $tweakLabel = Get-WinUtilTweakDisplayName -Key $tweak
+      Step-WinUtilJob -Status "Applying $tweakLabel ($($completedSteps + 1)/$totalSteps)" -Percent ([int](($completedSteps / $totalSteps) * 100))
       Measure-WinUtilStep -Scope "Tweaks" -Name $tweak -ScriptBlock {
         Invoke-WinUtilTweaks $tweak
       }
@@ -11307,6 +11674,7 @@ function Invoke-WPFUIElements {
                         $button.HorizontalAlignment = "Left"
                         $button.SetResourceReference([Windows.Controls.Control]::MarginProperty, "ButtonMargin")
                         $button.SetResourceReference([Windows.Controls.Control]::FontSizeProperty, "ButtonFontSize")
+                        $button.ToolTip = $entryInfo.Description
                         if ($entryInfo.ButtonWidth) {
                             $baseWidth = [int]$entryInfo.ButtonWidth
                             $button.Width = [math]::Max($baseWidth, 350)
@@ -11687,7 +12055,8 @@ function Invoke-WPFundoall {
         Write-WinUtilLog -Component "Tweaks" -Message "Undo tweaks requested: $total selected tweak(s)."
 
         for ($i = 0; $i -lt $total; $i++) {
-            Step-WinUtilJob -Status "Undoing $($Tweaks[$i]) ($($i + 1)/$total)" -Percent ([int](($i / $total) * 100))
+            $tweakLabel = Get-WinUtilTweakDisplayName -Key $Tweaks[$i]
+            Step-WinUtilJob -Status "Undoing $tweakLabel ($($i + 1)/$total)" -Percent ([int](($i / $total) * 100))
             Measure-WinUtilStep -Scope "Undo tweaks" -Name $Tweaks[$i] -ScriptBlock {
                 Invoke-WinUtiltweaks $Tweaks[$i] -undo $true
             }
@@ -11733,7 +12102,7 @@ function Invoke-WPFUnInstall {
     } -ScriptBlock {
         param($PackagesToUninstall, $ManagerPreference)
 
-        $packagesSorted = Get-WinUtilSelectedPackages -PackageList $PackagesToUninstall -Preference $ManagerPreference
+        $packagesSorted = Get-WinUtilSelectedPackages -PackageList $PackagesToUninstall -Preference $ManagerPreference -Action Uninstall
         $packagesWinget = $packagesSorted['Winget']
         $packagesChoco = $packagesSorted['Choco']
         $totalPackages = @($packagesWinget).Count + @($packagesChoco).Count
@@ -11885,12 +12254,18 @@ function Invoke-WPFUpdatesdisable {
 
     Write-Host "Configuring registry settings..." -ForegroundColor Yellow
     Write-WinUtilLog -Component "Updates" -Message "Configuring Windows Update registry policy values for disable mode."
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Force
+    # New-Item -Force on an existing registry key deletes the key and its subkeys first, so only
+    # create missing keys and keep any other policies already stored under them.
+    if (-not (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU")) {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Force | Out-Null
+    }
 
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoUpdate" -Type DWord -Value 1
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "AUOptions" -Type DWord -Value 1
 
-    New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" -Force
+    if (-not (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config")) {
+        New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" -Force | Out-Null
+    }
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" -Name "DODownloadMode" -Type DWord -Value 0
 
     foreach ($serviceName in @("BITS", "wuauserv", "UsoSvc")) {
@@ -11965,6 +12340,15 @@ function Invoke-WPFUpdatessecurity {
     Remove-ItemProperty -Path $automaticUpdatePolicyPath -Name "NoAutoUpdate" -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" -Name "DODownloadMode" -ErrorAction SilentlyContinue
 
+    # Win11 Creator blocks Windows Update until its first-logon cleanup runs. Clear anything left of that block,
+    # but keep a real WSUS server.
+    Remove-ItemProperty -Path $windowsUpdatePolicyPath -Name "DisableWindowsUpdateAccess" -ErrorAction SilentlyContinue
+    if ((Get-ItemProperty -Path $windowsUpdatePolicyPath -Name "WUServer" -ErrorAction SilentlyContinue).WUServer -eq "http://localhost:8080") {
+        Remove-ItemProperty -Path $windowsUpdatePolicyPath -Name "WUServer" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $windowsUpdatePolicyPath -Name "WUStatusServer" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $automaticUpdatePolicyPath -Name "UseWUServer" -ErrorAction SilentlyContinue
+    }
+
     Set-Service -Name BITS -StartupType Manual
     Set-Service -Name wuauserv -StartupType Manual
     Set-Service -Name UsoSvc -StartupType Automatic
@@ -11982,16 +12366,24 @@ function Invoke-WPFUpdatessecurity {
         Get-ScheduledTask -TaskPath $Task -ErrorAction SilentlyContinue | Enable-ScheduledTask -ErrorAction SilentlyContinue
     }
 
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata" -Force
+    # New-Item -Force on an existing registry key deletes the key and its subkeys first, so only
+    # create missing keys and keep any other policies already stored under them.
+    if (-not (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata")) {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata" -Force | Out-Null
+    }
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata" -Name "PreventDeviceMetadataFromNetwork" -Type DWord -Value 1
 
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Force
+    if (-not (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching")) {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Force | Out-Null
+    }
 
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Name "DontPromptForWindowsUpdate" -Type DWord -Value 1
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Name "DontSearchWindowsUpdate" -Type DWord -Value 1
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching" -Name "DriverUpdateWizardWuSearchEnabled" -Type DWord -Value 0
 
-    New-Item -Path $windowsUpdatePolicyPath -Force
+    if (-not (Test-Path $windowsUpdatePolicyPath)) {
+        New-Item -Path $windowsUpdatePolicyPath -Force | Out-Null
+    }
     Set-ItemProperty -Path $windowsUpdatePolicyPath -Name "ExcludeWUDriversInQualityUpdate" -Type DWord -Value 1
 
     Write-Host "Deferring feature updates by 365 days and quality updates by 4 days..."
@@ -12010,7 +12402,9 @@ function Invoke-WPFUpdatessecurity {
     Write-Host "Configuring automatic updates to download and notify before installation..."
     Write-WinUtilLog -Component "Updates" -Message "Configuring automatic updates to download and notify before installation."
 
-    New-Item -Path $automaticUpdatePolicyPath -Force
+    if (-not (Test-Path $automaticUpdatePolicyPath)) {
+        New-Item -Path $automaticUpdatePolicyPath -Force | Out-Null
+    }
 
     # Remove the previous scheduled-install reboot policy when switching to download-and-notify.
     Remove-ItemProperty -Path $automaticUpdatePolicyPath -Name "NoAutoRebootWithLoggedOnUsers" -ErrorAction SilentlyContinue
@@ -12531,7 +12925,7 @@ $sync.configs.applications = @'
   },
   "WPFInstallflux": {
     "category": "工具程式",
-    "choco": "flux",
+    "choco": "f.lux",
     "content": "F.lux",
     "description": "f.lux 會調整螢幕的色溫，以減輕夜間使用時的眼睛疲勞。",
     "link": "https://justgetflux.com/",
@@ -12674,7 +13068,7 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstallhugo": {
-    "category": "工具程式",
+    "category": "開發",
     "choco": "hugo-extended",
     "content": "Hugo",
     "description": "全世界最快的網站建置框架。",
@@ -12717,6 +13111,15 @@ $sync.configs.applications = @'
     "link": "https://www.cpuid.com/softwares/hwmonitor.html",
     "winget": "CPUID.HWMonitor",
     "foss": false
+  },
+  "WPFInstallimhex": {
+    "category": "Pro Tools",
+    "choco": "imhex",
+    "content": "ImHex",
+    "description": "ImHex is a free and open-source hex editor for reverse engineers and programmers, featuring a custom pattern language for decoding binary formats, a disassembler, and data analysis tools.",
+    "link": "https://imhex.werwolv.net/",
+    "winget": "WerWolv.ImHex",
+    "foss": true
   },
   "WPFInstallimageglass": {
     "category": "多媒體工具",
@@ -12900,7 +13303,7 @@ $sync.configs.applications = @'
   },
   "WPFInstallmpc-qt": {
     "category": "多媒體工具",
-    "choco": "mediainfo",
+    "choco": "mpc-qt",
     "content": "mpc-qt",
     "description": "Media Player Classic Qute Theater",
     "link": "https://mpc-qt.github.io",
@@ -12926,7 +13329,7 @@ $sync.configs.applications = @'
   },
   "WPFInstallminitoolpartitionwizard": {
     "category": "工具程式",
-    "choco": "minitoolpartitionwizard",
+    "choco": "partitionwizard",
     "content": "MiniTool Partition Wizard",
     "description": "功能完整的免費磁碟分割管理器，可執行 Windows 原生無法進行的進階操作，例如合併分割區、轉換檔案系統與整理磁碟容量。",
     "link": "https://www.partitionwizard.com/",
@@ -12970,7 +13373,7 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstallmsiafterburner": {
-    "category": "工具程式",
+    "category": "Pro Tools",
     "choco": "msiafterburner",
     "content": "MSI Afterburner",
     "description": "MSI Afterburner 是一款具備進階功能的顯示卡超頻工具。",
@@ -13024,7 +13427,7 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstalltailscale": {
-    "category": "工具程式",
+    "category": "Pro Tools",
     "choco": "tailscale",
     "content": "Tailscale",
     "description": "The Tailscale client allows you to connect all your devices using WireGuard®, without the hassle. Tailscale makes it as easy as installing an app and signing in.",
@@ -13095,7 +13498,7 @@ $sync.configs.applications = @'
     "foss": true
   },
   "WPFInstallnotepadplus": {
-    "category": "多媒體工具",
+    "category": "開發",
     "choco": "notepadplusplus",
     "content": "Notepad++",
     "description": "Notepad++ 是一款免費、開放原始碼的程式碼編輯器，可取代記事本，並支援多種語言。",
@@ -13174,6 +13577,15 @@ $sync.configs.applications = @'
     "link": "https://www.opautoclicker.com",
     "winget": "OPAutoClicker.OPAutoClicker",
     "foss": false
+  },
+  "WPFInstallopencode": {
+    "category": "開發",
+    "choco": "opencode",
+    "content": "OpenCode",
+    "description": "OpenCode is an open-source AI coding agent built for the terminal. It is provider-agnostic and supports local and hosted AI models.",
+    "link": "https://opencode.ai/",
+    "winget": "SST.opencode",
+    "foss": true
   },
   "WPFInstallopenrgb": {
     "category": "工具程式",
@@ -13411,11 +13823,20 @@ $sync.configs.applications = @'
   },
   "WPFInstallprocessmonitor": {
     "category": "Microsoft 工具",
-    "choco": "procexp",
+    "choco": "procmon",
     "content": "Process Monitor",
     "description": "SysInternals Process Monitor 是進階監控工具，可即時顯示檔案系統、登錄檔以及處理程序／執行緒的活動。",
     "link": "https://docs.microsoft.com/en-us/sysinternals/downloads/procmon",
     "winget": "Microsoft.Sysinternals.ProcessMonitor",
+    "foss": false
+  },
+  "WPFInstallpstools": {
+    "category": "Microsoft 工具",
+    "choco": "pstools",
+    "content": "PsTools",
+    "description": "Microsoft Sysinternals PsTools provides utilities for managing local and remote Windows systems and monitoring processes. PsExec can run processes under the SYSTEM account when the user has local administrative rights on the target system.",
+    "link": "https://learn.microsoft.com/en-us/sysinternals/downloads/pstools",
+    "winget": "Microsoft.Sysinternals.PsTools",
     "foss": false
   },
   "WPFInstallputty": {
@@ -13482,7 +13903,7 @@ $sync.configs.applications = @'
     "foss": false
   },
   "WPFInstallrufus": {
-    "category": "工具程式",
+    "category": "Pro Tools",
     "choco": "rufus",
     "content": "Rufus Imager",
     "description": "Rufus 是協助格式化與建立可開機 USB 隨身碟（如 USB 隨身碟或隨身碟）的工具程式。",
@@ -13527,7 +13948,7 @@ $sync.configs.applications = @'
     "foss": false
   },
   "WPFInstallsysteminformer": {
-    "category": "開發",
+    "category": "Pro Tools",
     "choco": "systeminformer",
     "content": "System Informer",
     "description": "一款免費、強大的多用途工具，可協助你監控系統資源、除錯軟體與偵測惡意程式。",
@@ -13680,7 +14101,7 @@ $sync.configs.applications = @'
   },
   "WPFInstallteamviewer": {
     "category": "工具程式",
-    "choco": "teamviewer9",
+    "choco": "teamviewer",
     "content": "TeamViewer",
     "description": "TeamViewer 是熱門的遠端存取與支援軟體，讓你連線並控制遠端裝置。",
     "link": "https://www.teamviewer.com/",
@@ -13797,7 +14218,7 @@ $sync.configs.applications = @'
   },
   "WPFInstallunity": {
     "category": "開發",
-    "choco": "unityhub",
+    "choco": "unity-hub",
     "content": "Unity Game Engine",
     "description": "Unity 是強大的遊戲開發平台，可用於製作 2D、3D、擴增實境與虛擬實境遊戲。",
     "link": "https://unity.com/",
@@ -14084,7 +14505,7 @@ $sync.configs.applications = @'
   },
   "WPFInstallZenBrowser": {
     "category": "瀏覽器",
-    "choco": "zen-browser",
+    "choco": "na",
     "content": "Zen Browser",
     "description": "以 Firefox 為基礎打造、注重隱私且以效能為導向的現代化瀏覽器。",
     "link": "https://zen-browser.app/",
@@ -15562,6 +15983,18 @@ $sync.configs.tweaks = @'
     "Description": "停用 Microsoft 遙測。",
     "category": "必要調校",
     "panel": "1",
+    "service": [
+      {
+        "Name": "diagtrack",
+        "StartupType": "Disabled",
+        "OriginalType": "Automatic"
+      },
+      {
+        "Name": "WerSvc",
+        "StartupType": "Disabled",
+        "OriginalType": "Manual"
+      }
+    ],
     "registry": [
       {
         "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
@@ -15646,13 +16079,20 @@ $sync.configs.tweaks = @'
         "Value": "0",
         "Type": "DWord",
         "OriginalValue": "<RemoveEntry>"
+      },
+      {
+        "Path": "HKCU:\\Software\\Microsoft\\Siuf\\Rules",
+        "Name": "PeriodInNanoSeconds",
+        "Value": "<RemoveEntry>",
+        "Type": "DWord",
+        "OriginalValue": "<RemoveEntry>"
       }
     ],
     "InvokeScript": [
-      "\n      # Disable Defender Auto Sample Submission\n      Set-MpPreference -SubmitSamplesConsent 2\n\n      # Disable (Connected User Experiences and Telemetry) Service\n      Set-Service -Name diagtrack -StartupType Disabled\n\n      # Disable (Windows Error Reporting Manager) Service\n      Set-Service -Name wermgr -StartupType Disabled\n\n      # Disable PowerShell 7 telemetry\n      [Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '1', 'Machine')\n\n      Remove-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Siuf\\Rules\" -Name PeriodInNanoSeconds\n      "
+      "\n      # Disable Defender Auto Sample Submission\n      Set-MpPreference -SubmitSamplesConsent 2\n\n      # Disable PowerShell 7 telemetry\n      [Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '1', 'Machine')\n      "
     ],
     "UndoScript": [
-      "\n      # Enable Defender Auto Sample Submission\n      Set-MpPreference -SubmitSamplesConsent 1\n\n      # Enable (Connected User Experiences and Telemetry) Service\n      Set-Service -Name diagtrack -StartupType Automatic\n\n      # Enable (Windows Error Reporting Manager) Service\n      Set-Service -Name wermgr -StartupType Automatic\n\n      # Enable PowerShell 7 telemetry\n      [Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '', 'Machine')\n      "
+      "\n      # Enable Defender Auto Sample Submission\n      Set-MpPreference -SubmitSamplesConsent 1\n\n      # Enable PowerShell 7 telemetry\n      [Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '', 'Machine')\n      "
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/telemetry"
   },
@@ -15678,7 +16118,7 @@ $sync.configs.tweaks = @'
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "InvokeScript": [
-      "\n      $Path = Resolve-Path -Path \"$Env:ProgramFiles (x86)\\Microsoft\\Edge\\Application\\*\\Installer\\setup.exe\" | Select-Object -Last 1\n\n      if (Test-Path $Path) {\n          New-Item -Path \"$Env:SystemRoot\\SystemApps\\Microsoft.MicrosoftEdge_8wekyb3d8bbwe\\MicrosoftEdge.exe\" -Force\n          Start-Process -FilePath $Path -ArgumentList \"--uninstall --system-level --force-uninstall --delete-profile\" -Wait\n          Write-Host \"Microsoft Edge was removed\"\n      } else {\n          Write-Host \"Microsoft Edge is not installed\"\n      }\n      "
+      "\n      $EdgeAppDir = \"$Env:ProgramFiles (x86)\\Microsoft\\Edge\\Application\"\n      $Path = $null\n      if (Test-Path -LiteralPath $EdgeAppDir -ErrorAction Stop) {\n          $InstallerPattern = Join-Path $EdgeAppDir \"*\\Installer\\setup.exe\"\n          if (Test-Path -Path $InstallerPattern -ErrorAction Stop) {\n              $Path = Resolve-Path -Path $InstallerPattern -ErrorAction Stop | Select-Object -Last 1\n          }\n      }\n\n      if ($Path) {\n          New-Item -Path \"$Env:SystemRoot\\SystemApps\\Microsoft.MicrosoftEdge_8wekyb3d8bbwe\\MicrosoftEdge.exe\" -Force\n          Start-Process -FilePath $Path -ArgumentList \"--uninstall --system-level --force-uninstall --delete-profile\" -Wait\n          Write-Host \"Microsoft Edge was removed\"\n      } else {\n          Write-Host \"Microsoft Edge is not installed\"\n      }\n      "
     ],
     "UndoScript": [
       "\n      Write-Host \"Installing Microsoft Edge...\"\n      winget install Microsoft.Edge --source winget\n      "
@@ -15720,10 +16160,10 @@ $sync.configs.tweaks = @'
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "InvokeScript": [
-      "\n      # Deny permission to remove OneDrive folder\n      icacls $Env:OneDrive /deny \"*S-1-5-32-544:(D,DC)\"\n\n      Write-Host \"Uninstalling OneDrive...\"\n      Start-Process -FilePath (Join-Path $Env:SystemRoot \"System32\\OneDriveSetup.exe\") -ArgumentList '/uninstall' -Wait\n\n      # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\n      Write-Host \"Removing leftover OneDrive Files...\"\n\n      Stop-Process -Name FileCoAuth,Explorer\n\n      Remove-Item \"$Env:LocalAppData\\Microsoft\\OneDrive\" -Recurse -Force\n      Remove-Item \"$Env:ProgramData\\Microsoft OneDrive\" -Recurse -Force\n\n      # Grant back permission to access OneDrive folder\n      icacls $Env:OneDrive /grant \"*S-1-5-32-544:(D,DC)\"\n\n      if (-not (Get-ChildItem -Path $Env:OneDrive)) {\n          Remove-Item -Path $Env:OneDrive -Recurse\n          [Environment]::SetEnvironmentVariable('OneDrive', $null, 'User')\n      }\n\n      # Disable OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Disabled\n      "
+      "\n      $OneDrivePath = $Env:OneDrive\n      $OneDriveFolderExists = -not [string]::IsNullOrWhiteSpace($OneDrivePath) -and (Test-Path -LiteralPath $OneDrivePath -PathType Container -ErrorAction Stop)\n\n      if ($OneDriveFolderExists) {\n          $OneDriveAcl = Get-Acl -LiteralPath $OneDrivePath -ErrorAction Stop\n      } else {\n          Write-Host \"OneDrive folder is already absent; skipping folder permissions and cleanup.\"\n      }\n\n      try {\n          if ($OneDriveFolderExists) {\n              # Protect user files while the uninstaller runs.\n              icacls $OneDrivePath /deny \"*S-1-5-32-544:(D,DC)\"\n              if ($LASTEXITCODE -ne 0) { throw \"Unable to protect the OneDrive folder (icacls exit code $LASTEXITCODE).\" }\n          }\n\n          Write-Host \"Uninstalling OneDrive...\"\n          Start-Process -FilePath (Join-Path $Env:SystemRoot \"System32\\OneDriveSetup.exe\") -ArgumentList '/uninstall' -Wait -ErrorAction Stop\n\n          # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\n          Write-Host \"Removing leftover OneDrive Files...\"\n\n          Get-Process -ErrorAction Stop | Where-Object ProcessName -eq 'FileCoAuth' | Stop-Process -ErrorAction Stop\n          Get-Process -ErrorAction Stop | Where-Object ProcessName -eq 'Explorer' | Stop-Process -ErrorAction Stop\n\n          $OneDriveLeftovers = @(\"$Env:LocalAppData\\Microsoft\\OneDrive\", \"$Env:ProgramData\\Microsoft OneDrive\")\n          foreach ($LeftoverPath in $OneDriveLeftovers) {\n              if (Test-Path -LiteralPath $LeftoverPath -ErrorAction Stop) {\n                  Remove-Item -LiteralPath $LeftoverPath -Recurse -Force -ErrorAction Stop\n              }\n          }\n      } finally {\n          if ($OneDriveFolderExists) {\n              # Restore access even when uninstall or leftover cleanup fails.\n              Set-Acl -LiteralPath $OneDrivePath -AclObject $OneDriveAcl -ErrorAction Stop\n          }\n      }\n\n      if ($OneDriveFolderExists -and -not (Get-ChildItem -LiteralPath $OneDrivePath -Force -ErrorAction Stop)) {\n          # Refuse to delete if files appeared after the emptiness check.\n          [System.IO.Directory]::Delete($OneDrivePath, $false)\n          [Environment]::SetEnvironmentVariable('OneDrive', $null, 'User')\n      }\n\n      # OneSyncSvc is a per-user template; Get-Service only exposes user instances.\n      # Skip the operation if this Windows installation has no template.\n      if (Test-Path -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\OneSyncSvc') {\n          Set-Service -Name OneSyncSvc -StartupType Disabled\n      }\n      "
     ],
     "UndoScript": [
-      "\n      Write-Host \"Installing OneDrive\"\n      winget install Microsoft.Onedrive --source winget\n\n      # Enabled OneSyncSvc\n      Set-Service -Name OneSyncSvc -StartupType Automatic\n      "
+      "\n      Write-Host \"Installing OneDrive\"\n      winget install Microsoft.Onedrive --source winget\n\n      # Enable OneSyncSvc when the per-user service template exists\n      if (Test-Path -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\OneSyncSvc') {\n          Set-Service -Name OneSyncSvc -StartupType Automatic\n      }\n      "
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/removeonedrive"
   },
@@ -15788,7 +16228,7 @@ $sync.configs.tweaks = @'
         "Path": "HKCU:\\Control Panel\\Keyboard",
         "Name": "KeyboardDelay",
         "Value": "0",
-        "Type": "DWord",
+        "Type": "String",
         "OriginalValue": "1"
       },
       {
@@ -15829,20 +16269,6 @@ $sync.configs.tweaks = @'
       {
         "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
         "Name": "TaskbarMn",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "ShowTaskViewButton",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",
-        "Name": "SearchboxTaskbarMode",
         "Value": "0",
         "Type": "DWord",
         "OriginalValue": "1"
@@ -15943,7 +16369,7 @@ $sync.configs.tweaks = @'
       }
     ],
     "InvokeScript": [
-      "\n      $Appx = (Get-AppxPackage MicrosoftWindows.Client.CoreAI).PackageFullName\n      $Sid = (Get-LocalUser $Env:UserName).Sid.Value\n\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Appx\\AppxAllUserStore\\EndOfLife\\$Sid\\$Appx\" -Force\n\n      Get-AppxPackage -AllUsers \"*Copilot*\" | Remove-AppxPackage -AllUsers\n      winget uninstall -e --name \"Copilot\" --silent --force --accept-source-agreements 2>$null\n      Get-AppxPackage -AllUsers Microsoft.MicrosoftOfficeHub | Remove-AppxPackage -AllUsers\n\n      if ($Appx) {\n          Remove-AppxPackage $Appx\n      }\n\n      Set-Service -Name WSAIFabricSvc -StartupType Disabled\n      Disable-WindowsOptionalFeature -FeatureName Recall -Online -NoRestart\n\n      Write-Host \"Windows AI Disabled\"\n      "
+      "\n      $Appx = (Get-AppxPackage MicrosoftWindows.Client.CoreAI).PackageFullName\n      $Sid = (Get-LocalUser $Env:UserName).Sid.Value\n\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Appx\\AppxAllUserStore\\EndOfLife\\$Sid\\$Appx\" -Force\n\n      Get-AppxPackage -AllUsers \"*Copilot*\" | Remove-AppxPackage -AllUsers\n      winget uninstall -e --name \"Copilot\" --silent --force --accept-source-agreements 2>$null\n      Get-AppxPackage -AllUsers Microsoft.MicrosoftOfficeHub | Remove-AppxPackage -AllUsers\n\n      if ($Appx) {\n          Remove-AppxPackage $Appx\n      }\n\n      # WSAIFabricSvc only exists on some Windows 11 builds; without the guard a\n      # missing service aborts the rest of this script block and Recall stays enabled\n      if (Get-Service -Name WSAIFabricSvc -ErrorAction SilentlyContinue) {\n          Set-Service -Name WSAIFabricSvc -StartupType Disabled\n      }\n      # Store/MSIX PowerShell 7 can hang or fail COM activation in DISM.\n      $RecallCommand = {\n          Disable-WindowsOptionalFeature -FeatureName Recall -Online -NoRestart -ErrorAction Stop | Out-Null\n      }\n      $RecallOutput = powershell.exe -NoProfile -NonInteractive -Command $RecallCommand 2>&1\n      if ($LASTEXITCODE -ne 0) {\n          throw \"Failed to disable Recall (exit code $LASTEXITCODE): $(($RecallOutput | Out-String).Trim())\"\n      }\n      $RecallOutput | ForEach-Object { Write-Host $_ }\n\n      Write-Host \"Windows AI Disabled\"\n      "
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/windowsai"
   },
@@ -16430,7 +16856,7 @@ $sync.configs.tweaks = @'
         "Path": "HKCU:\\Control Panel\\Mouse",
         "Name": "MouseSpeed",
         "Value": "1",
-        "Type": "DWord",
+        "Type": "String",
         "OriginalValue": "0",
         "DefaultState": "true"
       },
@@ -16438,7 +16864,7 @@ $sync.configs.tweaks = @'
         "Path": "HKCU:\\Control Panel\\Mouse",
         "Name": "MouseThreshold1",
         "Value": "6",
-        "Type": "DWord",
+        "Type": "String",
         "OriginalValue": "0",
         "DefaultState": "true"
       },
@@ -16446,7 +16872,7 @@ $sync.configs.tweaks = @'
         "Path": "HKCU:\\Control Panel\\Mouse",
         "Name": "MouseThreshold2",
         "Value": "10",
-        "Type": "DWord",
+        "Type": "String",
         "OriginalValue": "0",
         "DefaultState": "true"
       }
@@ -16768,6 +17194,7 @@ $sync.configs.tweaks = @'
   },
   "WPFOOSUbutton": {
     "Content": "O&O ShutUp10++ - 執行",
+    "Description": "Downloads O&O ShutUp10++ (about 82 MB) from oo-software.com on every click and launches it. Nothing is installed; the file is saved under %LocalAppData%\\winutil.",
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "Type": "Button",
@@ -18431,6 +18858,7 @@ $inputXML = @'
                                 Background="Transparent"
                                 HorizontalAlignment="Right" VerticalAlignment="Center"
                                 Panel.ZIndex="1"
+                                AutomationProperties.Name="Previous Step"
                                 ToolTip="Back to the previous step">
                             <Button.Style>
                                 <Style TargetType="Button" BasedOn="{StaticResource HoverButtonStyle}">
@@ -18453,6 +18881,7 @@ $inputXML = @'
                                 Background="Transparent"
                                 HorizontalAlignment="Left" VerticalAlignment="Center"
                                 Panel.ZIndex="1"
+                                AutomationProperties.Name="Next Step"
                                 ToolTip="Forward to the next step">
                             <Button.Style>
                                 <Style TargetType="Button" BasedOn="{StaticResource HoverButtonStyle}">
@@ -18674,6 +19103,7 @@ $inputXML = @'
                                                 </Grid.ColumnDefinitions>
                                                 <TextBox Grid.Column="0"
                                                          Name="WPFWin11ISOPath"
+                                                         AutomationProperties.Name="ISO file"
                                                          IsReadOnly="True"
                                                          VerticalAlignment="Center"
                                                          VerticalContentAlignment="Center"
@@ -18756,6 +19186,7 @@ $inputXML = @'
                                         <StackPanel>
                                             <TextBlock Style="{StaticResource Win11StepLabel}" Text="Windows edition"/>
                                             <ComboBox Name="WPFWin11ISOEditionComboBox"
+                                                      AutomationProperties.Name="Windows edition"
                                                       FontSize="{DynamicResource FontSize}"
                                                       Foreground="{DynamicResource MainForegroundColor}"
                                                       Background="{DynamicResource MainBackgroundColor}"
@@ -18853,6 +19284,7 @@ $inputXML = @'
                                                 </Grid.ColumnDefinitions>
                                                 <ComboBox Grid.Column="0"
                                                           Name="WPFWin11ISOUSBDriveComboBox"
+                                                          AutomationProperties.Name="USB drive"
                                                           Foreground="{DynamicResource MainForegroundColor}"
                                                           Background="{DynamicResource MainBackgroundColor}"
                                                           VerticalAlignment="Center"
@@ -18980,6 +19412,7 @@ $inputXML = @'
                                      text wraps, and its drop shadow lands on the glyphs with no background
                                      here to sit under. -->
                                 <TextBox Name="WPFWin11ISOStatusLog"
+                                         AutomationProperties.Name="Status Log"
                                          IsReadOnly="True"
                                          TextWrapping="Wrap"
                                          TextAlignment="Left"
@@ -19420,9 +19853,6 @@ $scripts = @(
         reg.exe add "HKCU\Software\Microsoft\Windows\CurrentVersion\Start" /v ShowRecentList /t REG_DWORD /d 0 /f;
         reg.exe add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Start_TrackDocs /t REG_DWORD /d 0 /f;
     };
-    {
-        Restart-Computer -Force;
-    };
 );
 
 &amp; {
@@ -19446,6 +19876,11 @@ $scripts = @(
     $complete += $increment;
   }
 } *&gt;&amp;1 | Out-String -Width 1KB -Stream &gt;&gt; "$env:TEMP\UserOnce.log";
+
+# RunOnce and FirstLogonCommands can overlap. Publish completion after the log is flushed.
+$completionDir = Join-Path $env:LOCALAPPDATA 'WinUtil';
+[System.IO.Directory]::CreateDirectory($completionDir) | Out-Null;
+[System.IO.File]::WriteAllText((Join-Path $completionDir 'UserOnce.complete'), '');
         </File>
         <File path="C:\Windows\Setup\Scripts\DefaultUser.ps1">
 $scripts = @(
@@ -19538,7 +19973,7 @@ $scripts = @(
     {
         $recallFeature = Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Enabled' -and $_.FeatureName -like 'Recall' };
         if( $recallFeature ) {
-            Disable-WindowsOptionalFeature -Online -FeatureName 'Recall' -Remove -ErrorAction SilentlyContinue;
+            Disable-WindowsOptionalFeature -Online -FeatureName 'Recall' -Remove -NoRestart -ErrorAction SilentlyContinue;
         }
     };
     {
@@ -19551,7 +19986,7 @@ $scripts = @(
         Remove-Item -Path $viveDir -Recurse -Force;
     };
     {
-        Start-Process C:\Windows\System32\OneDriveSetup.exe -ArgumentList /uninstall
+        Start-Process C:\Windows\System32\OneDriveSetup.exe -ArgumentList /uninstall -Wait
     };
     {
         if( (Get-BitLockerVolume -MountPoint $Env:SystemDrive).ProtectionStatus -eq 'On' ) {
@@ -19586,6 +20021,23 @@ $scripts = @(
     $complete += $increment;
   }
 } *&gt;&amp;1 | Out-String -Width 1KB -Stream &gt;&gt; "C:\Windows\Setup\Scripts\FirstLogon.log";
+
+# UserOnce may finish first, so keep any completion flag it has already written.
+$completionPath = Join-Path $env:LOCALAPPDATA 'WinUtil\UserOnce.complete';
+$deadline = (Get-Date).AddMinutes(5);
+'WinUtil: Waiting for user configuration to finish before restarting (up to 5 minutes).' | Out-File -LiteralPath 'C:\Windows\Setup\Scripts\FirstLogon.log' -Append -ErrorAction Stop;
+while( -not (Test-Path -LiteralPath $completionPath -PathType Leaf) ) {
+    if( (Get-Date) -ge $deadline ) {
+        $message = 'WinUtil: Timed out waiting for user configuration. Automatic restart skipped. Check %TEMP%\UserOnce.log.';
+        $message | Out-File -LiteralPath 'C:\Windows\Setup\Scripts\FirstLogon.log' -Append -ErrorAction Stop;
+        return;
+    }
+    Start-Sleep -Seconds 1;
+}
+
+$message = 'WinUtil: First-logon customization complete. Restarting the computer.';
+$message | Out-File -LiteralPath 'C:\Windows\Setup\Scripts\FirstLogon.log' -Append -ErrorAction Stop;
+Restart-Computer -Force;
         </File>
     </Extensions>
 </unattend>
