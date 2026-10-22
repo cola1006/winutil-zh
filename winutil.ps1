@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.10.21
+    Version        : 26.10.22
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.10.21"
+$sync.version = "26.10.22"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -15683,7 +15683,7 @@ $sync.configs.tweaks = @'
   },
   "WPFTweaksServices": {
     "Content": "服務 - 設為手動",
-    "Description": "將部分服務設為手動啟動，並調整 SvcHostSplitThresholdInKB 登錄值以更符合系統記憶體，可大幅減少 svchost.exe 處理程序的數量。",
+    "Description": "Sets some services to Manual startup.",
     "category": "必要調校",
     "panel": "1",
     "service": [
@@ -15713,10 +15713,20 @@ $sync.configs.tweaks = @'
         "OriginalType": "Automatic"
       }
     ],
-    "InvokeScript": [
-      "\n      $Memory = (Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum / 1KB\n      Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\" -Name SvcHostSplitThresholdInKB -Value $Memory\n      "
-    ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/services"
+  },
+  "WPFTweaksSvcHostSplitting": {
+    "Content": "svchost.exe Splitting - Disable",
+    "Description": "Disables service-host splitting to reduce the number of svchost.exe processes and modestly lower memory overhead. Recommended for low-performance systems with 12 GB of RAM or less. Can interfere with Xbox services. Restart Windows after changing this setting.",
+    "category": "z__進階調校 - 注意",
+    "panel": "1",
+    "InvokeScript": [
+      "\n      # A threshold above the physical memory disables svchost service splitting\n      $Memory = (Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum / 1KB\n      Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\" -Name SvcHostSplitThresholdInKB -Value $Memory -Type DWord\n      "
+    ],
+    "UndoScript": [
+      "\n      # Windows client default (0x380000): splitting back on\n      Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\" -Name SvcHostSplitThresholdInKB -Value 3670016 -Type DWord -Force\n      "
+    ],
+    "link": "https://winutil.christitus.com/guides/tweaks/#advanced-tweaks-caution"
   },
   "WPFTweaksBraveDebloat": {
     "Content": "Brave Browser - 移除臃腫元件",
