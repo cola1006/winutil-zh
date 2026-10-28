@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.10.27
+    Version        : 26.10.28
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.10.27"
+$sync.version = "26.10.28"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -616,22 +616,17 @@ function Find-AppsByNameOrDescription {
             return
         }
 
-        # Escape wildcard characters for literal matching
-        $escapedSearchString = [System.Management.Automation.WildcardPattern]::Escape($SearchString)
-
+        # IndexOf with OrdinalIgnoreCase is faster than -like with wildcard escaping
         $sync.ItemsControl.Items | ForEach-Object {
-            # Each item is a StackPanel container with Children[0] = label, Children[1] = WrapPanel
             if ($_.Children.Count -ge 2) {
                 $categoryLabel = $_.Children[0]
                 $wrapPanel = $_.Children[1]
                 $categoryHasMatch = $false
-
                 $categoryLabel.Visibility = [Windows.Visibility]::Visible
 
                 foreach ($appControl in $wrapPanel.Children) {
                     $appTag = $appControl.Tag
                     $appEntry = $null
-
                     if (-not [string]::IsNullOrWhiteSpace($appTag) -and $sync.configs.applicationsHashtable.ContainsKey($appTag)) {
                         $appEntry = $sync.configs.applicationsHashtable[$appTag]
                     }
@@ -639,20 +634,17 @@ function Find-AppsByNameOrDescription {
                     if ($null -ne $appEntry) {
                         $categoryMatch = -not $hasCategories -or $activeCategories -contains $appEntry.Category
                         $textMatch = -not $hasSearch -or
-                            $appEntry.Content -like "*$escapedSearchString*" -or
-                            $appEntry.Description -like "*$escapedSearchString*" -or
-                            $appTag -like "*$escapedSearchString*"
+                            ([string]$appEntry.Content).IndexOf($SearchString, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                            ([string]$appEntry.Description).IndexOf($SearchString, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                            ([string]$appTag).IndexOf($SearchString, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
 
                         if ($categoryMatch -and $textMatch) {
                             $appControl.Visibility = [Windows.Visibility]::Visible
                             $categoryHasMatch = $true
-                        }
-                        else {
+                        } else {
                             $appControl.Visibility = [Windows.Visibility]::Collapsed
                         }
-                    }
-                    else {
-                        # Hide app if no entry found (data integrity issue)
+                    } else {
                         $appControl.Visibility = [Windows.Visibility]::Collapsed
                     }
                 }
@@ -682,326 +674,130 @@ function Find-AppsByNameOrDescription {
 
 function Find-TweaksByNameOrDescription {
     <#
-        .SYNOPSIS
-            Searches through the Tweaks on the Tweaks Tab and hides all entries that do not match the search string
-
-        .DESCRIPTION
-            Filters tweak entries by name or description using literal string matching (no wildcard expansion).
-            Respects collapsed category state and handles null $sync gracefully.
-            Safe for rapid keystroke events; no terminal spam on error conditions.
-
-        .PARAMETER SearchString
-            The string to be searched for. Wildcards are treated as literal characters.
-
-        .NOTES
-            - Uses module-scope $sync (resolved via global/script fallback if needed)
-            - Performs literal matching (no wildcard expansion)
-            - Safely handles missing UI elements and null properties
-            - Protected by try/catch to prevent UI thread crashes
-            - PowerShell 5.1 compatible (no ternary operators, no advanced language features)
+    .SYNOPSIS
+        Filters tweak/appx entries by name or description using literal string matching.
+    .PARAMETER SearchString
+        The string to search for. Treated as a literal (no wildcard expansion).
     #>
     param(
-        [Parameter(Mandatory = $false)]
         [string]$SearchString = ""
     )
 
-    # ------------------------------------------------------------------------------
-    # 1. RESOLVE $SYNC WITH MULTI-LEVEL FALLBACK
-    # ------------------------------------------------------------------------------
+    # $sync is always in scope in the compiled script - no multi-level fallback needed
+    if ($null -eq $sync -or $null -eq $sync.Form) { return }
 
-    if ($null -eq $Sync) {
-        $Sync = $global:sync
-        if ($null -eq $Sync) {
-            $Sync = $script:sync
+    if ($null -eq $sync.TweakCategoryAutoExpanded) {
+        $sync.TweakCategoryAutoExpanded = @{}
+    }
+
+    $panelName = if ($sync.currentTab -eq "AppX") { "appxpanel" } else { "tweakspanel" }
+    try { $tweaksPanel = $sync.Form.FindName($panelName) } catch { return }
+    if ($null -eq $tweaksPanel) { return }
+
+    # --- Helper: extract searchable text from a DockPanel or StackPanel item ---
+    function Get-ItemSearchText($item) {
+        $text = ""; $tip = ""
+        if ($item -is [Windows.Controls.DockPanel]) {
+            $label = $item.Children | Where-Object { $_ -is [Windows.Controls.Label] } | Select-Object -First 1
+            if ($label) { $text = [string]$label.Content; $tip = [string]$label.ToolTip }
+        } elseif ($item -is [Windows.Controls.StackPanel]) {
+            $cb = $item.Children | Where-Object { $_ -is [Windows.Controls.CheckBox] } | Select-Object -First 1
+            if ($cb) { $text = [string]$cb.Content; $tip = [string]$cb.ToolTip }
         }
+        return @{ Text = $text; Tip = $tip.Replace("Preset key: ", "") }
     }
-
-    # Validate that $Sync exists and has required structure
-    if ($null -eq $Sync) {
-        # Silent return - function called on every keystroke; no warning spam
-        return
-    }
-
-    if ($null -eq $Sync.Form) {
-        # Silent return - form not yet initialized
-        return
-    }
-
-    # ------------------------------------------------------------------------------
-    # 2. GET REFERENCE TO TWEAKS OR APPX PANEL
-    # ------------------------------------------------------------------------------
-
-    $panelName = "tweakspanel"
-    if ($null -ne $Sync.currentTab -and $Sync.currentTab -eq "AppX") {
-        $panelName = "appxpanel"
-    }
-
-    $tweaksPanel = $null
-    try {
-        $tweaksPanel = $Sync.Form.FindName($panelName)
-    }
-    catch {
-        # Silent return - panel not found or disposed
-        return
-    }
-
-    if ($null -eq $tweaksPanel) {
-        # Silent return - panel doesn't exist
-        return
-    }
-
-    # ------------------------------------------------------------------------------
-    # 3. HANDLE EMPTY/WHITESPACE SEARCH STRING - RESET TO DEFAULT STATE
-    # ------------------------------------------------------------------------------
-
-    if ([string]::IsNullOrWhiteSpace($SearchString)) {
-        try {
-            $tweaksPanel.Children | ForEach-Object {
-                $categoryBorder = $_
-
-                # Safely set visibility
-                if ($null -ne $categoryBorder) {
-                    $categoryBorder.Visibility = [Windows.Visibility]::Visible
-                }
-
-                # Process each category
-                if ($categoryBorder -is [Windows.Controls.Border]) {
-                    $dockPanel = $null
-                    if ($null -ne $categoryBorder.Child) {
-                        $dockPanel = $categoryBorder.Child
-                    }
-
-                    if ($dockPanel -is [Windows.Controls.DockPanel]) {
-                        $container = $dockPanel.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] -or $_ -is [Windows.Controls.StackPanel] -or $_ -is [Windows.Controls.ScrollViewer] -or $_.GetType().Name -eq "ItemsControl" } | Select-Object -First 1
-
-                        if ($null -ne $container) {
-                            $targetPanel = if ($container.PSObject.Properties['Content'] -and $null -ne $container.Content) { $container.Content } else { $container }
-                            $items = $null
-                            if ($targetPanel -is [Windows.Controls.ItemsControl] -or $targetPanel.GetType().Name -eq "ItemsControl") {
-                                $items = $targetPanel.Items
-                            }
-                            else {
-                                $items = $targetPanel.Children
-                            }
-                            # Show all items in the category
-                            foreach ($item in $items) {
-                                if ($null -ne $item) {
-                                    # Check if it's a category label (first Label in the container)
-                                    if ($item -is [Windows.Controls.Label] -or $item.GetType().Name -eq "Label") {
-                                        $item.Visibility = [Windows.Visibility]::Visible
-                                    }
-                                    elseif ($item -is [Windows.Controls.DockPanel] -or $item -is [Windows.Controls.StackPanel] -or $item.GetType().Name -eq "DockPanel" -or $item.GetType().Name -eq "StackPanel") {
-                                        # Show all checkbox containers
-                                        $item.Visibility = [Windows.Visibility]::Visible
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        catch {
-            # Silent catch - UI element may be disposed
-            $null = $_
-        }
-
-        return
-    }
-
-    # ------------------------------------------------------------------------------
-    # 4. PERFORM LITERAL SEARCH (NO WILDCARD EXPANSION)
-    # ------------------------------------------------------------------------------
 
     try {
-        # Normalize search term once for the entire operation
-        $searchTerm = $SearchString
-        if ($null -eq $searchTerm) {
-            $searchTerm = ""
-        }
-
-        # Iterate through all categories
-        $tweaksPanel.Children | ForEach-Object {
-            $categoryBorder = $_
-            $categoryHasMatch = $false
-
-            if ($categoryBorder -is [Windows.Controls.Border]) {
-                $dockPanel = $null
-                if ($null -ne $categoryBorder.Child) {
-                    $dockPanel = $categoryBorder.Child
-                }
-
-                if ($dockPanel -is [Windows.Controls.DockPanel]) {
-                    $container = $dockPanel.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] -or $_ -is [Windows.Controls.StackPanel] -or $_ -is [Windows.Controls.ScrollViewer] -or $_.GetType().Name -eq "ItemsControl" } | Select-Object -First 1
-
-                    if ($null -ne $container) {
-                        $categoryLabel = $null
-
-                        $targetPanel = if ($container.PSObject.Properties['Content'] -and $null -ne $container.Content) { $container.Content } else { $container }
-                        $items = $null
-                        if ($targetPanel -is [Windows.Controls.ItemsControl] -or $targetPanel.GetType().Name -eq "ItemsControl") {
-                            $items = $targetPanel.Items
-                        }
-                        else {
-                            $items = $targetPanel.Children
-                        }
-                        # Process all items (checkboxes, labels, panels) in the container
+        # Reset visibility when search is cleared
+        if ([string]::IsNullOrWhiteSpace($SearchString)) {
+            foreach ($categoryBorder in $tweaksPanel.Children) {
+                if ($null -eq $categoryBorder) { continue }
+                $categoryBorder.Visibility = [Windows.Visibility]::Visible
+                if ($categoryBorder -is [Windows.Controls.Border] -and $categoryBorder.Child -is [Windows.Controls.DockPanel]) {
+                    $container = $categoryBorder.Child.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] -or $_ -is [Windows.Controls.StackPanel] -or $_ -is [Windows.Controls.ScrollViewer] } | Select-Object -First 1
+                    if ($container) {
+                        $targetPanel = if ($container -is [Windows.Controls.ScrollViewer]) { $container.Content } else { $container }
+                        $items = if ($targetPanel -is [Windows.Controls.ItemsControl]) { $targetPanel.Items } else { $targetPanel.Children }
                         foreach ($item in $items) {
-                            if ($null -eq $item) {
-                                continue
-                            }
-
-                            # ------------------------------------------------------------
-                            # Check if this is a category label (usually first Label)
-                            # ------------------------------------------------------------
-
-                            if ($item -is [Windows.Controls.Label] -or $item.GetType().Name -eq "Label") {
-                                $categoryLabel = $item
-                                # Initially hide category label; show it only if matches found
-                                $item.Visibility = [Windows.Visibility]::Collapsed
-                            }
-
-                            # ------------------------------------------------------------
-                            # Check if this is a DockPanel containing a tweak checkbox
-                            # ------------------------------------------------------------
-
-                            elseif ($item -is [Windows.Controls.DockPanel] -or $item.GetType().Name -eq "DockPanel") {
-                                $checkbox = $null
-                                $label = $null
-
-                                # Safely extract checkbox and label
-                                $checkbox = $item.Children | Where-Object { $_ -is [Windows.Controls.CheckBox] -or $_.GetType().Name -eq "CheckBox" } | Select-Object -First 1
-                                $label = $item.Children | Where-Object { $_ -is [Windows.Controls.Label] -or $_.GetType().Name -eq "Label" } | Select-Object -First 1
-
-                                # Check if tweak matches search criteria
-                                $itemMatches = $false
-
-                                if ($null -ne $label) {
-                                    $labelContent = $label.Content
-                                    $labelToolTip = $label.ToolTip
-
-                                    # Safely null-check properties
-                                    if ($null -eq $labelContent) {
-                                        $labelContent = ""
-                                    }
-                                    if ($null -eq $labelToolTip) {
-                                        $labelToolTip = ""
-                                    }
-
-                                    # Convert to string and perform LITERAL matching
-                                    $labelContentStr = [string]$labelContent
-                                    $labelToolTipStr = [string]$labelToolTip
-
-                                    # Use IndexOf for literal matching (no wildcard interpretation)
-                                    $contentMatch = $labelContentStr.IndexOf($searchTerm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-                                    $toolTipMatch = $labelToolTipStr.IndexOf($searchTerm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-
-                                    if ($contentMatch -or $toolTipMatch) {
-                                        $itemMatches = $true
-                                    }
+                            if ($null -eq $item) { continue }
+                            if ($item -is [Windows.Controls.Label]) {
+                                $item.Visibility = [Windows.Visibility]::Visible
+                                # A category that filtering expanded goes back to how the user left it
+                                $labelStr = [string]$item.Content
+                                $categoryName = $labelStr -replace '^[+-] ', ''
+                                if ($sync.TweakCategoryAutoExpanded.ContainsKey($categoryName)) {
+                                    $item.Content = $labelStr -replace "^- ", "+ "
+                                    $labelStr = [string]$item.Content
+                                    $sync.TweakCategoryAutoExpanded.Remove($categoryName)
                                 }
-
-                                # Set visibility based on match result
-                                if ($itemMatches) {
-                                    $item.Visibility = [Windows.Visibility]::Visible
-                                    $categoryHasMatch = $true
+                                # Respect collapsed state: labels starting with "+" keep items collapsed
+                                if ($labelStr.StartsWith("+ ")) {
+                                    $collapsed = $true
+                                } else {
+                                    $collapsed = $false
                                 }
-                                else {
-                                    $item.Visibility = [Windows.Visibility]::Collapsed
-                                }
-                            }
-
-                            # ------------------------------------------------------------
-                            # Check if this is a StackPanel containing a tweak checkbox
-                            # ------------------------------------------------------------
-
-                            elseif ($item -is [Windows.Controls.StackPanel] -or $item.GetType().Name -eq "StackPanel") {
-                                $checkbox = $null
-                                $checkbox = $item.Children | Where-Object { $_ -is [Windows.Controls.CheckBox] -or $_.GetType().Name -eq "CheckBox" } | Select-Object -First 1
-
-                                $itemMatches = $false
-
-                                if ($null -ne $checkbox) {
-                                    $checkboxContent = $checkbox.Content
-                                    $checkboxToolTip = $checkbox.ToolTip
-
-                                    # Safely null-check properties
-                                    if ($null -eq $checkboxContent) {
-                                        $checkboxContent = ""
-                                    }
-                                    if ($null -eq $checkboxToolTip) {
-                                        $checkboxToolTip = ""
-                                    }
-
-                                    # Convert to string and perform LITERAL matching
-                                    $checkboxContentStr = [string]$checkboxContent
-                                    $checkboxToolTipStr = [string]$checkboxToolTip
-
-                                    # Match the preset key but not the "Preset key: " label added by Get-WinUtilEntryToolTip
-                                    $checkboxToolTipStr = $checkboxToolTipStr.Replace("Preset key: ", "")
-
-                                    # Use IndexOf for literal matching (no wildcard interpretation)
-                                    $contentMatch = $checkboxContentStr.IndexOf($searchTerm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-                                    $toolTipMatch = $checkboxToolTipStr.IndexOf($searchTerm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-
-                                    if ($contentMatch -or $toolTipMatch) {
-                                        $itemMatches = $true
-                                    }
-                                }
-
-                                # Set visibility based on match result
-                                if ($itemMatches) {
-                                    $item.Visibility = [Windows.Visibility]::Visible
-                                    $categoryHasMatch = $true
-                                }
-                                else {
-                                    $item.Visibility = [Windows.Visibility]::Collapsed
-                                }
-                            }
-                        }
-
-                        # ------------------------------------------------------------
-                        # Update category label visibility and expanded/collapsed state
-                        # ------------------------------------------------------------
-
-                        if ($categoryHasMatch) {
-                            # Show category label
-                            if ($null -ne $categoryLabel) {
-                                $categoryLabel.Visibility = [Windows.Visibility]::Visible
-
-                                # Update category label to expanded state (change "+" to "-")
-                                $labelContent = $categoryLabel.Content
-                                if ($null -ne $labelContent) {
-                                    $labelStr = [string]$labelContent
-
-                                    # Safe string replacement without -replace regex
-                                    if ($labelStr.StartsWith("+ ")) {
-                                        $expandedLabel = "- " + $labelStr.Substring(2)
-                                        $categoryLabel.Content = $expandedLabel
-                                    }
-                                }
+                            } else {
+                                $item.Visibility = if ($collapsed) { [Windows.Visibility]::Collapsed } else { [Windows.Visibility]::Visible }
                             }
                         }
                     }
                 }
+            }
+            return
+        }
 
-                # ----------------------------------------------------------------
-                # Set category border visibility based on whether it has matches
-                # ----------------------------------------------------------------
+        # Perform literal search
+        foreach ($categoryBorder in $tweaksPanel.Children) {
+            $categoryHasMatch = $false
+            if (-not ($categoryBorder -is [Windows.Controls.Border])) { continue }
+            if (-not ($categoryBorder.Child -is [Windows.Controls.DockPanel])) { continue }
 
-                if ($categoryHasMatch) {
-                    $categoryBorder.Visibility = [Windows.Visibility]::Visible
+            $container = $categoryBorder.Child.Children | Where-Object { $_ -is [Windows.Controls.ItemsControl] -or $_ -is [Windows.Controls.StackPanel] -or $_ -is [Windows.Controls.ScrollViewer] } | Select-Object -First 1
+            if ($null -eq $container) { continue }
+
+            $targetPanel = if ($container -is [Windows.Controls.ScrollViewer]) { $container.Content } else { $container }
+            $items = if ($targetPanel -is [Windows.Controls.ItemsControl]) { $targetPanel.Items } else { $targetPanel.Children }
+
+            $categoryLabel = $null
+            for ($i = 0; $i -lt $items.Count; $i++) {
+                $item = $items[$i]
+                if ($null -eq $item) { continue }
+
+                if ($item -is [Windows.Controls.Label]) {
+                    $categoryLabel = $item
+                    $item.Visibility = [Windows.Visibility]::Collapsed
+                    continue
                 }
-                else {
-                    $categoryBorder.Visibility = [Windows.Visibility]::Collapsed
+
+                # Unified search for both DockPanel and StackPanel items
+                if ($item -is [Windows.Controls.DockPanel] -or $item -is [Windows.Controls.StackPanel]) {
+                    $search = Get-ItemSearchText $item
+                    $isMatch = ($search.Text -and $search.Text.IndexOf($SearchString, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+                               ($search.Tip -and $search.Tip.IndexOf($SearchString, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+
+                    if ($isMatch) {
+                        $item.Visibility = [Windows.Visibility]::Visible
+                        $categoryHasMatch = $true
+                    } else {
+                        $item.Visibility = [Windows.Visibility]::Collapsed
+                    }
                 }
             }
+
+            # Update category label and border visibility
+            if ($categoryHasMatch -and $null -ne $categoryLabel) {
+                $categoryLabel.Visibility = [Windows.Visibility]::Visible
+                $labelStr = [string]$categoryLabel.Content
+                if ($labelStr.StartsWith("+ ")) {
+                    $categoryLabel.Content = "- " + $labelStr.Substring(2)
+                    $sync.TweakCategoryAutoExpanded[($labelStr.Substring(2))] = $true
+                }
+            }
+            $categoryBorder.Visibility = if ($categoryHasMatch) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
         }
-    }
-    catch {
-        # Silent catch - UI elements may be disposed or in unexpected state
-        # Do not log to terminal as this function is called on every keystroke
-        $null = $_
+    } catch {
+        # Log instead of silently swallowing - but only at DEBUG to avoid keystroke spam
+        Write-WinUtilLog -Level "DEBUG" -Component "Search" -Message "Tweaks search error: $($_.Exception.Message)"
     }
 }
 
@@ -3153,10 +2949,10 @@ Function Invoke-WinUtilCurrentSystem {
     )
     if ($CheckBox -eq "choco") {
         $apps = (choco list | Select-String -Pattern "^\S+").Matches.Value
-        $sync.configs.applicationsHashtable.GetEnumerator() | ForEach-Object {
-            $packageId = ($_.Value.choco -split ";")[-1].Trim()
+        foreach ($app in $sync.configs.applicationsHashtable.GetEnumerator()) {
+            $packageId = ($app.Value.choco -split ";")[-1].Trim()
             if ($packageId -ne "na" -and $packageId -in $apps) {
-                Write-Output $_.Key
+                Write-Output $app.Key
             }
         }
 
@@ -3195,10 +2991,10 @@ Function Invoke-WinUtilCurrentSystem {
             $idColumnStart = $Matches[1].Length
         }
 
-        $sync.configs.applicationsHashtable.GetEnumerator() | ForEach-Object {
-            $packageId = (($_.Value.winget -split ";")[-1] -replace "^msstore:", "").Trim()
+        foreach ($app in $sync.configs.applicationsHashtable.GetEnumerator()) {
+            $packageId = (($app.Value.winget -split ";")[-1] -replace "^msstore:", "").Trim()
             if ([string]::IsNullOrWhiteSpace($packageId) -or $packageId -eq "na") {
-                return
+                continue
             }
 
             $escapedPackageId = [regex]::Escape($packageId)
@@ -3206,7 +3002,7 @@ Function Invoke-WinUtilCurrentSystem {
             # Skip rows whose Name has combining marks or emoji: they are more characters than columns and shift the offset
             $idColumnPattern = "(?im)(?<=^[^\r\n\p{M}\p{Cs}\p{Cf}]{$($idColumnStart - 1)}[^\S\r\n])$escapedPackageId(?=[^\S\r\n]|$)"
             if ($installedProgramText -match $packagePattern -or ($idColumnStart -and $installedProgramText -match $idColumnPattern)) {
-                Write-Output $_.Key
+                Write-Output $app.Key
             }
         }
     }
@@ -3216,29 +3012,28 @@ Function Invoke-WinUtilCurrentSystem {
         if (!(Test-Path 'HKU:\')) {$null = (New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS)}
         $readErrorAction = if ($StopOnReadError) { "Stop" } else { "SilentlyContinue" }
 
-        $sync.configs.tweaks | Get-Member -MemberType NoteProperty | ForEach-Object {
-
-            $Config = $psitem.Name
-            $entry = $sync.configs.tweaks.$Config
+        foreach ($prop in $sync.configs.tweaks.PSObject.Properties) {
+            $Config = $prop.Name
+            $entry = $prop.Value
             $registryKeys = $entry.registry
             $serviceKeys = $entry.service
             $entryType = $entry.Type
 
             if (($registryKeys -or $serviceKeys) -and $entryType -ne "Combobox") {
-                $Values = @()
+                $allMatch = $true
 
                 if ($entryType -eq "Toggle") {
                     if (-not (Get-WinUtilToggleStatus $Config `
                         -BypassCache:$BypassToggleStatusCache `
                         -StopOnReadError:$StopOnReadError)) {
-                        $values += $False
+                        $allMatch = $false
                     }
                 } else {
                     $registryMatchCount = 0
                     $registryTotal = 0
 
-                    Foreach ($tweaks in $registryKeys) {
-                        Foreach ($tweak in $tweaks) {
+                    foreach ($tweaks in $registryKeys) {
+                        foreach ($tweak in $tweaks) {
                             $registryTotal++
                             $regstate = $null
 
@@ -3252,15 +3047,9 @@ Function Invoke-WinUtilCurrentSystem {
 
                             if ($null -eq $regstate) {
                                 switch ($tweak.DefaultState) {
-                                    "true" {
-                                        $regstate = $tweak.Value
-                                    }
-                                    "false" {
-                                        $regstate = $tweak.OriginalValue
-                                    }
-                                    default {
-                                        $regstate = $tweak.OriginalValue
-                                    }
+                                    "true" { $regstate = $tweak.Value }
+                                    "false" { $regstate = $tweak.OriginalValue }
+                                    default { $regstate = $tweak.OriginalValue }
                                 }
                             }
 
@@ -3271,37 +3060,32 @@ Function Invoke-WinUtilCurrentSystem {
                     }
 
                     if ($registryTotal -gt 0 -and $registryMatchCount -ne $registryTotal) {
-                        $values += $False
+                        $allMatch = $false
                     }
                 }
 
-                Foreach ($tweaks in $serviceKeys) {
-                    Foreach ($tweak in $tweaks) {
+                foreach ($tweaks in $serviceKeys) {
+                    foreach ($tweak in $tweaks) {
                         try {
                             $Service = Get-Service -Name $tweak.Name -ErrorAction $readErrorAction
                         } catch {
                             if ($StopOnReadError -and $_.FullyQualifiedErrorId -like "NoServiceFoundForGivenName*") {
                                 # A removed optional service means this tweak is not applied; it does
                                 # not make the registry and service state for every other tweak unknown.
-                                $values += $False
+                                $allMatch = $false
                                 continue
                             }
                             throw
                         }
 
-                        if ($Service) {
-                            $actualValue = $Service.StartType
-                            $expectedValue = $tweak.StartupType
-                            if ($expectedValue -ne $actualValue) {
-                                $values += $False
-                            }
-                        } elseif ($StopOnReadError) {
-                            $values += $False
+                        if (($Service -and $tweak.StartupType -ne $Service.StartType) -or
+                            (-not $Service -and $StopOnReadError)) {
+                            $allMatch = $false
                         }
                     }
                 }
 
-                if ($values -notcontains $false) {
+                if ($allMatch) {
                     Write-Output $Config
                 }
             }
@@ -5673,7 +5457,7 @@ function Invoke-WinutilThemeChange {
             if ($themeProperty.Name -like "*color*") {
                 Set-ThemeResourceProperty -Name $themeProperty.Name -Value $themeProperty.Value -Type "ColorBrush"
                 # For certain color properties, also set complementary values (e.g., BorderColor -> CBorderColor) This is required because e.g DropShadowEffect requires a <Color> and not a <SolidColorBrush> object
-                if ($themeProperty.Name -in @("BorderColor", "ButtonBackgroundMouseoverColor")) {
+                if ($themeProperty.Name -in @("BorderColor", "ButtonBackgroundMouseoverColor", "MainGradientTopColor", "MainGradientBottomColor")) {
                     Set-ThemeResourceProperty -Name "C$($themeProperty.Name)" -Value $themeProperty.Value -Type "Color"
                 }
             }
@@ -5785,7 +5569,7 @@ function Invoke-WinUtilTweaks {
         }
     }
     if ($sync.configs.tweaks.$CheckBox.service) {
-        $sync.configs.tweaks.$CheckBox.service | ForEach-Object {
+        foreach ($item in $sync.configs.tweaks.$CheckBox.service) {
             $changeservice = $true
 
             # KeepServiceStartup protects a service the user (or another tool) changed away from
@@ -5793,9 +5577,9 @@ function Invoke-WinUtilTweaks {
             # OriginalType when the service still sits at the StartupType this tweak applies.
             # This compares current state, not history: a service already at StartupType
             # before apply is indistinguishable from one changed by this tweak.
-            $expectedType = if ($undo) { $psitem.StartupType } else { $psitem.$($values.OriginalService) }
+            $expectedType = if ($undo) { $item.StartupType } else { $item.$($values.OriginalService) }
             if ($KeepServiceStartup) {
-                $serviceName = $psitem.Name
+                $serviceName = $item.Name
                 try {
                     # Check if the service exists
                     $service = Get-Service -Name $serviceName -ErrorAction Stop
@@ -5814,29 +5598,28 @@ function Invoke-WinUtilTweaks {
             }
 
             if ($changeservice) {
-                Set-WinUtilService -Name $psitem.Name -StartupType $psitem.$($values.Service)
+                Set-WinUtilService -Name $item.Name -StartupType $item.$($values.Service)
             }
         }
     }
     if ($sync.configs.tweaks.$CheckBox.registry) {
-        $sync.configs.tweaks.$CheckBox.registry | Where-Object { -not $psitem.Values } | ForEach-Object {
-            Set-WinUtilRegistry -Name $psitem.Name -Path $psitem.Path -Type $psitem.Type -Value $psitem.$($values.registry)
+        foreach ($reg in $sync.configs.tweaks.$CheckBox.registry) {
+            if ($reg.Values) { continue }
+            Set-WinUtilRegistry -Name $reg.Name -Path $reg.Path -Type $reg.Type -Value $reg.$($values.registry)
         }
     }
     if ($sync.configs.tweaks.$CheckBox.$($values.ScriptType)) {
-        $sync.configs.tweaks.$CheckBox.$($values.ScriptType) | ForEach-Object {
-            $Scriptblock = [scriptblock]::Create($psitem)
+        foreach ($scr in $sync.configs.tweaks.$CheckBox.$($values.ScriptType)) {
+            $Scriptblock = [scriptblock]::Create($scr)
             Invoke-WinUtilScript -ScriptBlock $scriptblock -Name $CheckBox
         }
     }
 
-    if (!$undo) {
-        if($sync.configs.tweaks.$CheckBox.appx) {
-            $sync.configs.tweaks.$CheckBox.appx | ForEach-Object {
-                Remove-WinUtilAPPX -Name $psitem
-            }
-            Remove-WinUtilProvisionedAPPX -PackageList $sync.configs.tweaks.$CheckBox.appx
+    if (!$undo -and $sync.configs.tweaks.$CheckBox.appx) {
+        foreach ($pkg in $sync.configs.tweaks.$CheckBox.appx) {
+            Remove-WinUtilAPPX -Name $pkg
         }
+        Remove-WinUtilProvisionedAPPX -PackageList $sync.configs.tweaks.$CheckBox.appx
     }
     $errorCount = [int]$global:WinUtilJobErrorCount - $errorsBefore
     if ($errorCount -gt 0) {
@@ -7112,57 +6895,36 @@ function Show-CustomDialog {
 
     $dialog.Content = $border
 
-    # Create a grid for layout inside the Border
     $grid = New-Object Windows.Controls.Grid
     $border.Child = $grid
-
-    # Uncomment the following line to show gridlines
-    #$grid.ShowGridLines = $true
-
-    # Add the following line to set the background color of the grid
     $grid.Background = [Windows.Media.Brushes]::Transparent
-    # Add the following line to make the Grid stretch
     $grid.HorizontalAlignment = [Windows.HorizontalAlignment]::Stretch
     $grid.VerticalAlignment = [Windows.VerticalAlignment]::Stretch
-
-    # Add the following line to make the Border stretch
     $border.HorizontalAlignment = [Windows.HorizontalAlignment]::Stretch
     $border.VerticalAlignment = [Windows.VerticalAlignment]::Stretch
 
-    # Set up Row Definitions
-    $row0 = New-Object Windows.Controls.RowDefinition
-    $row0.Height = [Windows.GridLength]::Auto
-
-    $row1 = New-Object Windows.Controls.RowDefinition
-    $row1.Height = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star)
-
-    $row2 = New-Object Windows.Controls.RowDefinition
-    $row2.Height = [Windows.GridLength]::Auto
-
-    # Add Row Definitions to Grid
+    $row0 = New-Object Windows.Controls.RowDefinition; $row0.Height = [Windows.GridLength]::Auto
+    $row1 = New-Object Windows.Controls.RowDefinition; $row1.Height = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star)
+    $row2 = New-Object Windows.Controls.RowDefinition; $row2.Height = [Windows.GridLength]::Auto
     $grid.RowDefinitions.Add($row0)
     $grid.RowDefinitions.Add($row1)
     $grid.RowDefinitions.Add($row2)
 
-    # Add StackPanel for horizontal layout with margins
     $stackPanel = New-Object Windows.Controls.StackPanel
-    $stackPanel.Margin = New-Object Windows.Thickness(10)  # Add margins around the stack panel
+    $stackPanel.Margin = New-Object Windows.Thickness(10)
     $stackPanel.Orientation = [Windows.Controls.Orientation]::Horizontal
-    $stackPanel.HorizontalAlignment = [Windows.HorizontalAlignment]::Left  # Align to the left
-    $stackPanel.VerticalAlignment = [Windows.VerticalAlignment]::Top  # Align to the top
-
+    $stackPanel.HorizontalAlignment = [Windows.HorizontalAlignment]::Left
+    $stackPanel.VerticalAlignment = [Windows.VerticalAlignment]::Top
     $grid.Children.Add($stackPanel)
-    [Windows.Controls.Grid]::SetRow($stackPanel, 0)  # Set the row to the second row (0-based index)
+    [Windows.Controls.Grid]::SetRow($stackPanel, 0)
 
-    # Add SVG path to the stack panel
     $stackPanel.Children.Add((Invoke-WinUtilAssets -Type "logo" -Size $LogoSize))
 
-    # Add "Winutil" text
     $winutilTextBlock = New-Object Windows.Controls.TextBlock
     $winutilTextBlock.Text = "WinUtil"
     $winutilTextBlock.FontSize = $HeaderFontSize
     $winutilTextBlock.Foreground = $LogoColor
-    $winutilTextBlock.Margin = New-Object Windows.Thickness(10, 10, 10, 5)  # Add margins around the text block
+    $winutilTextBlock.Margin = New-Object Windows.Thickness(10, 10, 10, 5)
     $stackPanel.Children.Add($winutilTextBlock)
     # Add TextBlock for information with text wrapping and margins
     $messageTextBlock = New-Object Windows.Controls.TextBlock
@@ -8775,40 +8537,31 @@ function Invoke-WinUtilWhenIdle {
 
 function Test-WinUtilPackageManager {
     <#
-
     .SYNOPSIS
-        Checks if WinGet and/or Choco are installed
-
+        Checks if WinGet and/or Choco are installed.
     .PARAMETER winget
-        Check if WinGet is installed
-
+        Check if WinGet is installed.
     .PARAMETER choco
-        Check if Chocolatey is installed
-
+        Check if Chocolatey is installed.
     #>
-
     Param(
         [System.Management.Automation.SwitchParameter]$winget,
         [System.Management.Automation.SwitchParameter]$choco
     )
 
-    if ($winget) {
-        if (Get-Command winget -ErrorAction SilentlyContinue) {
-            $status = "installed"
-        } else {
-            $status = "not-installed"
+    # Handle missing switch - callers rely on the return value
+    if (-not $winget -and -not $choco) { return "not-installed" }
+
+    $cmds = @()
+    if ($winget) { $cmds += "winget" }
+    if ($choco) { $cmds += "choco" }
+
+    foreach ($cmd in $cmds) {
+        if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+            return "not-installed"
         }
     }
-
-    if ($choco) {
-        if (Get-Command choco -ErrorAction SilentlyContinue) {
-            $status = "installed"
-        } else {
-            $status = "not-installed"
-        }
-    }
-
-    return $status
+    return "installed"
 }
 
 function Update-WinUtilAppCategoryChip {
@@ -10162,14 +9915,13 @@ function Invoke-WPFFixesUpdate {
 
     Write-Progress -Id 0 -Activity "Repairing Windows Update" -Status "Stopping Windows Update Services..." -PercentComplete 10
     # Stop the Windows Update Services
-    Write-Progress -Id 2 -ParentId 0 -Activity "Stopping Services" -Status "Stopping BITS..." -PercentComplete 0
-    Stop-Service -Name BITS -Force
-    Write-Progress -Id 2 -ParentId 0 -Activity "Stopping Services" -Status "Stopping wuauserv..." -PercentComplete 20
-    Stop-Service -Name wuauserv -Force
-    Write-Progress -Id 2 -ParentId 0 -Activity "Stopping Services" -Status "Stopping appidsvc..." -PercentComplete 40
-    Stop-Service -Name appidsvc -Force
-    Write-Progress -Id 2 -ParentId 0 -Activity "Stopping Services" -Status "Stopping cryptsvc..." -PercentComplete 60
-    Stop-Service -Name cryptsvc -Force
+    $services = @("BITS", "wuauserv", "appidsvc", "cryptsvc")
+    for ($i = 0; $i -lt $services.Count; $i++) {
+        $svc = $services[$i]
+        $pct = [int](($i / $services.Count) * 100)
+        Write-Progress -Id 2 -ParentId 0 -Activity "Stopping Services" -Status "Stopping $svc..." -PercentComplete $pct
+        Stop-Service -Name $svc -Force
+    }
     Write-Progress -Id 2 -ParentId 0 -Activity "Stopping Services" -Status "Completed" -PercentComplete 100
 
 
@@ -10222,7 +9974,9 @@ function Invoke-WPFFixesUpdate {
         "wuweb.dll", "qmgr.dll", "qmgrprxy.dll", "wucltux.dll", "muweb.dll", "wuwebv.dll"
     )
     foreach ($dll in $DLLs) {
-        Write-Progress -Id 5 -ParentId 0 -Activity "Reregistering DLLs" -Status "Registering $dll..." -PercentComplete ($i / $DLLs.Count * 100)
+        if ($i % 5 -eq 0 -or $i -eq ($DLLs.Count - 1)) {
+            Write-Progress -Id 5 -ParentId 0 -Activity "Reregistering DLLs" -Status "Registering $dll..." -PercentComplete (($i / $DLLs.Count) * 100)
+        }
         $i++
         Start-Process -NoNewWindow -FilePath "regsvr32.exe" -ArgumentList "/s", $dll
     }
@@ -10322,17 +10076,9 @@ function Invoke-WPFFixesUpdate {
     Show-WinUtilMessage -Message "Stock settings loaded.`n Please reboot your computer" -Title "Reset Windows Update" -Button "OK" -Icon "Information" | Out-Null
 
     # Remove the progress bars
-    Write-Progress -Id 0 -Activity "Repairing Windows Update" -Completed
-    Write-Progress -Id 1 -Activity "Scanning for corruption" -Completed
-    Write-Progress -Id 2 -Activity "Stopping Services" -Completed
-    Write-Progress -Id 3 -Activity "Renaming/Removing Files" -Completed
-    Write-Progress -Id 4 -Activity "Resetting the WU Service Security Descriptors" -Completed
-    Write-Progress -Id 5 -Activity "Reregistering DLLs" -Completed
-    Write-Progress -Id 6 -Activity "Removing Group Policy Windows Update settings" -Completed
-    Write-Progress -Id 7 -Activity "Resetting WinSock" -Completed
-    Write-Progress -Id 8 -Activity "Deleting BITS jobs" -Completed
-    Write-Progress -Id 9 -Activity "Starting Windows Update Services" -Completed
-    Write-Progress -Id 10 -Activity "Forcing discovery" -Completed
+    foreach ($id in 0..10) {
+        Write-Progress -Id $id -Activity "Completed" -Completed -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-WPFFixesWinget {
@@ -10478,7 +10224,7 @@ function Invoke-WPFImpex {
                 if ($Config) {
                     try {
                         if ($Config -match '^https?://') {
-                            $jsonFile = (Invoke-WebRequest "$Config" -ErrorAction Stop).Content | ConvertFrom-Json
+                            $jsonFile = (Invoke-WebRequest "$Config" -UseBasicParsing -ErrorAction Stop).Content | ConvertFrom-Json
                         } else {
                             $jsonFile = Get-Content -LiteralPath $Config -ErrorAction Stop | ConvertFrom-Json
                         }
@@ -11310,22 +11056,15 @@ function Invoke-WPFUIElements {
         $targetGrid.ColumnDefinitions.Add($colDef) | Out-Null
     }
 
-    # Convert PSCustomObject to Hashtable
-    $configHashtable = @{}
-    $configVariable.PSObject.Properties.Name | ForEach-Object {
-        $configHashtable[$_] = $configVariable.$_
-    }
-
     $radioButtonGroups = @{}
-
     $organizedData = @{}
-    # Iterate through JSON data and organize by panel and category
-    foreach ($entry in $configHashtable.Keys) {
-        $entryInfo = $configHashtable[$entry]
 
-        # Create an object for the application
+    # Iterate through JSON data and organize by panel and category using generic lists
+    foreach ($prop in $configVariable.PSObject.Properties) {
+        $entryInfo = $prop.Value
+
         $entryObject = [PSCustomObject]@{
-            Name        = $entry
+            Name        = $prop.Name
             Category    = $entryInfo.Category
             Content     = $entryInfo.Content
             Panel       = if ($entryInfo.Panel) { $entryInfo.Panel } else { "0" }
@@ -11337,20 +11076,20 @@ function Invoke-WPFUIElements {
             Registry    = $entryInfo.registry
             Checked     = $entryInfo.Checked
             ButtonWidth = $entryInfo.ButtonWidth
-            GroupName   = $entryInfo.GroupName  # Added for RadioButton groupings
+            GroupName   = $entryInfo.GroupName
         }
 
-        if (-not $organizedData.ContainsKey($entryObject.Panel)) {
-            $organizedData[$entryObject.Panel] = @{}
+        $panel = $entryObject.Panel
+        if (-not $organizedData.ContainsKey($panel)) {
+            $organizedData[$panel] = @{}
         }
 
-        if (-not $organizedData[$entryObject.Panel].ContainsKey($entryObject.Category)) {
-            $organizedData[$entryObject.Panel][$entryObject.Category] = @()
+        $cat = $entryObject.Category
+        if (-not $organizedData[$panel].ContainsKey($cat)) {
+            $organizedData[$panel][$cat] = [System.Collections.Generic.List[object]]::new()
         }
 
-        # Store application data in an array under the category
-        $organizedData[$entryObject.Panel][$entryObject.Category] += $entryObject
-
+        $organizedData[$panel][$cat].Add($entryObject)
     }
 
     # Initialize panel count
@@ -15424,7 +15163,7 @@ $sync.configs.themes = @'
     "CustomDialogWidth": "400",
     "CustomDialogHeight": "200",
     "FontSize": "12",
-    "FontFamily": "Arial",
+    "FontFamily": "Segoe UI",
     "HeaderFontSize": "16",
     "Win11StepTitleFontSize": "22",
     "Win11StepHeroFontSize": "40",
@@ -15444,7 +15183,7 @@ $sync.configs.themes = @'
     "CloseIconFontSize": "12",
     "GroupBorderBackgroundColor": "#232629",
     "ButtonFontSize": "12",
-    "ButtonFontFamily": "Arial",
+    "ButtonFontFamily": "Segoe UI",
     "ButtonWidth": "250",
     "ButtonHeight": "25",
     "ConfigTabButtonFontSize": "14",
@@ -15456,90 +15195,96 @@ $sync.configs.themes = @'
     "CheckboxMouseOverColor": "#999999",
     "ButtonBorderThickness": "1",
     "ButtonMargin": "1",
-    "ButtonCornerRadius": "2"
+    "ButtonCornerRadius": "6"
   },
   "Light": {
-    "AppInstallUnselectedColor": "#F7F7F7",
-    "AppInstallHighlightedColor": "#CFCFCF",
-    "AppInstallSelectedColor": "#C2C2C2",
-    "ComboBoxForegroundColor": "#232629",
-    "ComboBoxBackgroundColor": "#F7F7F7",
-    "LabelboxForegroundColor": "#232629",
-    "MainForegroundColor": "#232629",
-    "MainBackgroundColor": "#F7F7F7",
-    "LabelBackgroundColor": "#F7F7F7",
-    "LinkForegroundColor": "#484848",
-    "LinkHoverForegroundColor": "#232629",
-    "ScrollBarBackgroundColor": "#4A4D52",
-    "ScrollBarHoverColor": "#5A5D62",
-    "ScrollBarDraggingColor": "#6A6D72",
-    "ProgressBarForegroundColor": "#2E77FF",
-    "ProgressBarErrorColor": "#D13438",
-    "ProgressBarWarningColor": "#B36A00",
+    "AppInstallUnselectedColor": "#FBF9F5",
+    "AppInstallHighlightedColor": "#EFEAE1",
+    "AppInstallSelectedColor": "#E3EDEA",
+    "ComboBoxForegroundColor": "#2E2A25",
+    "ComboBoxBackgroundColor": "#FBF9F5",
+    "LabelboxForegroundColor": "#2E2A25",
+    "MainForegroundColor": "#2E2A25",
+    "MainBackgroundColor": "#EFEBE4",
+    "MainGradientTopColor": "#F5F2EC",
+    "MainGradientBottomColor": "#E9E3D9",
+    "SurfaceBackgroundColor": "#FBF9F5",
+    "LabelBackgroundColor": "Transparent",
+    "LinkForegroundColor": "#2F6A66",
+    "LinkHoverForegroundColor": "#1B5F5A",
+    "ScrollBarBackgroundColor": "#B5ADA1",
+    "ScrollBarHoverColor": "#9C9387",
+    "ScrollBarDraggingColor": "#857C70",
+    "ProgressBarForegroundColor": "#2F7D78",
+    "ProgressBarErrorColor": "#C93C3C",
+    "ProgressBarWarningColor": "#B26B00",
     "ProgressBarBackgroundColor": "Transparent",
-    "ButtonInstallBackgroundColor": "#F7F7F7",
-    "ButtonTweaksBackgroundColor": "#F7F7F7",
-    "ButtonConfigBackgroundColor": "#F7F7F7",
-    "ButtonUpdatesBackgroundColor": "#F7F7F7",
-    "ButtonWin11ISOBackgroundColor": "#F7F7F7",
-    "ButtonAppxBackgroundColor": "#F7F7F7",
-    "ButtonInstallForegroundColor": "#232629",
-    "ButtonTweaksForegroundColor": "#232629",
-    "ButtonConfigForegroundColor": "#232629",
-    "ButtonUpdatesForegroundColor": "#232629",
-    "ButtonWin11ISOForegroundColor": "#232629",
-    "ButtonAppxForegroundColor": "#232629",
-    "ButtonBackgroundColor": "#F5F5F5",
-    "ButtonBackgroundPressedColor": "#1A1A1A",
-    "ButtonBackgroundMouseoverColor": "#C2C2C2",
-    "ButtonBackgroundSelectedColor": "#F0F0F0",
-    "ButtonForegroundColor": "#232629",
-    "ToggleButtonOnColor": "#2E77FF",
-    "ToggleButtonOffColor": "#707070",
-    "ToolTipBackgroundColor": "#F7F7F7",
-    "BorderColor": "#232629",
-    "BorderOpacity": "0.2"
+    "ButtonInstallBackgroundColor": "#FBF9F5",
+    "ButtonTweaksBackgroundColor": "#FBF9F5",
+    "ButtonConfigBackgroundColor": "#FBF9F5",
+    "ButtonUpdatesBackgroundColor": "#FBF9F5",
+    "ButtonWin11ISOBackgroundColor": "#FBF9F5",
+    "ButtonAppxBackgroundColor": "#FBF9F5",
+    "ButtonInstallForegroundColor": "#2E2A25",
+    "ButtonTweaksForegroundColor": "#2E2A25",
+    "ButtonConfigForegroundColor": "#2E2A25",
+    "ButtonUpdatesForegroundColor": "#2E2A25",
+    "ButtonWin11ISOForegroundColor": "#2E2A25",
+    "ButtonAppxForegroundColor": "#2E2A25",
+    "ButtonBackgroundColor": "#FBF9F5",
+    "ButtonBackgroundPressedColor": "#2F7D78",
+    "ButtonBackgroundMouseoverColor": "#EFEAE1",
+    "ButtonBackgroundSelectedColor": "#E3EDEA",
+    "ButtonForegroundColor": "#2E2A25",
+    "ToggleButtonOnColor": "#2F7D78",
+    "ToggleButtonOffColor": "#9A9286",
+    "ToolTipBackgroundColor": "#FBF9F5",
+    "BorderColor": "#B8AE9F",
+    "BorderOpacity": "0.35"
   },
   "Dark": {
-    "AppInstallUnselectedColor": "#232629",
-    "AppInstallHighlightedColor": "#3C3C3C",
-    "AppInstallSelectedColor": "#4C4C4C",
-    "ComboBoxForegroundColor": "#F7F7F7",
-    "ComboBoxBackgroundColor": "#1E3747",
-    "LabelboxForegroundColor": "#5BDCFF",
-    "MainForegroundColor": "#F7F7F7",
-    "MainBackgroundColor": "#232629",
-    "LabelBackgroundColor": "#232629",
-    "LinkForegroundColor": "#ADD8E6",
-    "LinkHoverForegroundColor": "#F7F7F7",
-    "ScrollBarBackgroundColor": "#2E3135",
-    "ScrollBarHoverColor": "#3B4252",
-    "ScrollBarDraggingColor": "#5E81AC",
-    "ProgressBarForegroundColor": "#6EFF72",
+    "AppInstallUnselectedColor": "#232A36",
+    "AppInstallHighlightedColor": "#2F3A4D",
+    "AppInstallSelectedColor": "#3A4B66",
+    "ComboBoxForegroundColor": "#E4E8F0",
+    "ComboBoxBackgroundColor": "#263244",
+    "LabelboxForegroundColor": "#7FB2FF",
+    "MainForegroundColor": "#E4E8F0",
+    "MainBackgroundColor": "#1B2029",
+    "MainGradientTopColor": "#263145",
+    "MainGradientBottomColor": "#151A23",
+    "SurfaceBackgroundColor": "#212835",
+    "LabelBackgroundColor": "Transparent",
+    "LinkForegroundColor": "#8EC5FF",
+    "LinkHoverForegroundColor": "#E4E8F0",
+    "ScrollBarBackgroundColor": "#2B3342",
+    "ScrollBarHoverColor": "#3A4559",
+    "ScrollBarDraggingColor": "#5B84C4",
+    "ProgressBarForegroundColor": "#4ADE80",
     "ProgressBarErrorColor": "#FF6B6B",
     "ProgressBarWarningColor": "#FFC83D",
     "ProgressBarBackgroundColor": "Transparent",
-    "ButtonInstallBackgroundColor": "#222222",
-    "ButtonTweaksBackgroundColor": "#333333",
-    "ButtonConfigBackgroundColor": "#444444",
-    "ButtonUpdatesBackgroundColor": "#555555",
-    "ButtonWin11ISOBackgroundColor": "#666666",
-    "ButtonAppxBackgroundColor": "#777777",
-    "ButtonInstallForegroundColor": "#F7F7F7",
-    "ButtonTweaksForegroundColor": "#F7F7F7",
-    "ButtonConfigForegroundColor": "#F7F7F7",
-    "ButtonUpdatesForegroundColor": "#F7F7F7",
-    "ButtonWin11ISOForegroundColor": "#F7F7F7",
-    "ButtonAppxForegroundColor": "#F7F7F7",
-    "ButtonBackgroundColor": "#1E3747",
-    "ButtonBackgroundPressedColor": "#F7F7F7",
-    "ButtonBackgroundMouseoverColor": "#3B4252",
-    "ButtonBackgroundSelectedColor": "#5E81AC",
-    "ButtonForegroundColor": "#F7F7F7",
-    "ToggleButtonOnColor": "#2E77FF",
-    "ToggleButtonOffColor": "#707070",
-    "ToolTipBackgroundColor": "#2F373D",
-    "BorderColor": "#2F373D",
+    "ButtonInstallBackgroundColor": "#232C3B",
+    "ButtonTweaksBackgroundColor": "#273245",
+    "ButtonConfigBackgroundColor": "#2B384D",
+    "ButtonUpdatesBackgroundColor": "#2F3E55",
+    "ButtonWin11ISOBackgroundColor": "#33445D",
+    "ButtonAppxBackgroundColor": "#374A65",
+    "ButtonInstallForegroundColor": "#E4E8F0",
+    "ButtonTweaksForegroundColor": "#E4E8F0",
+    "ButtonConfigForegroundColor": "#E4E8F0",
+    "ButtonUpdatesForegroundColor": "#E4E8F0",
+    "ButtonWin11ISOForegroundColor": "#E4E8F0",
+    "ButtonAppxForegroundColor": "#E4E8F0",
+    "ButtonBackgroundColor": "#263244",
+    "ButtonBackgroundPressedColor": "#4C8DFF",
+    "ButtonBackgroundMouseoverColor": "#34445E",
+    "ButtonBackgroundSelectedColor": "#3D5E99",
+    "ButtonForegroundColor": "#E4E8F0",
+    "ToggleButtonOnColor": "#4C8DFF",
+    "ToggleButtonOffColor": "#5D6778",
+    "ToolTipBackgroundColor": "#2B3547",
+    "BorderColor": "#3A4660",
     "BorderOpacity": "0.2"
   }
 }
@@ -15726,7 +15471,7 @@ $sync.configs.tweaks = @'
     "UndoScript": [
       "\n      # Windows client default (0x380000): splitting back on\n      Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\" -Name SvcHostSplitThresholdInKB -Value 3670016 -Type DWord -Force\n      "
     ],
-    "link": "https://winutil.christitus.com/guides/tweaks/#advanced-tweaks-caution"
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/svchostsplitting"
   },
   "WPFTweaksBraveDebloat": {
     "Content": "Brave Browser - 移除臃腫元件",
@@ -17624,18 +17369,18 @@ $inputXML = @'
                                 <Setter TargetName="BackgroundBorder" Property="Background" Value="{DynamicResource ButtonBackgroundMouseoverColor}"/>
                                 <Setter Property="Effect">
                                     <Setter.Value>
-                                        <DropShadowEffect Opacity="1" ShadowDepth="5" Color="{DynamicResource CButtonBackgroundMouseoverColor}" Direction="-100" BlurRadius="15"/>
+                                        <DropShadowEffect Opacity="0.4" ShadowDepth="2" Color="{DynamicResource CButtonBackgroundMouseoverColor}" Direction="-100" BlurRadius="8"/>
                                     </Setter.Value>
                                 </Setter>
                                 <Setter Property="Panel.ZIndex" Value="2000"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter Property="BorderBrush" Value="Pink"/>
+                                <Setter TargetName="ButtonGlow" Property="BorderBrush" Value="{DynamicResource ToggleButtonOnColor}"/>
                                 <Setter Property="BorderThickness" Value="2"/>
                                 <Setter TargetName="BackgroundBorder" Property="Background" Value="{DynamicResource ButtonBackgroundSelectedColor}"/>
                                 <Setter Property="Effect">
                                     <Setter.Value>
-                                        <DropShadowEffect Opacity="1" ShadowDepth="2" Color="{DynamicResource CButtonBackgroundMouseoverColor}" Direction="-111" BlurRadius="10"/>
+                                        <DropShadowEffect Opacity="0.35" ShadowDepth="2" Color="{DynamicResource CButtonBackgroundMouseoverColor}" Direction="-111" BlurRadius="8"/>
                                     </Setter.Value>
                                 </Setter>
                             </Trigger>
@@ -17801,7 +17546,7 @@ $inputXML = @'
         <!-- Checkbox template -->
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="{DynamicResource MainForegroundColor}"/>
-            <Setter Property="Background" Value="{DynamicResource MainBackgroundColor}"/>
+            <Setter Property="Background" Value="Transparent"/>
             <Setter Property="FontSize" Value="{DynamicResource FontSize}" />
             <Setter Property="FontFamily" Value="{DynamicResource FontFamily}"/>
             <Setter Property="TextElement.FontFamily" Value="{DynamicResource FontFamily}"/>
@@ -17855,7 +17600,7 @@ $inputXML = @'
         </Style>
         <Style TargetType="RadioButton">
             <Setter Property="Foreground" Value="{DynamicResource MainForegroundColor}"/>
-            <Setter Property="Background" Value="{DynamicResource MainBackgroundColor}"/>
+            <Setter Property="Background" Value="Transparent"/>
             <Setter Property="FontSize" Value="{DynamicResource FontSize}" />
             <Setter Property="FontFamily" Value="{DynamicResource FontFamily}"/>
             <Setter Property="Template">
@@ -18060,7 +17805,7 @@ $inputXML = @'
 
 
         <Style x:Key="BorderStyle" TargetType="Border">
-            <Setter Property="Background" Value="{DynamicResource MainBackgroundColor}"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceBackgroundColor}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="5"/>
@@ -18068,7 +17813,7 @@ $inputXML = @'
             <Setter Property="Margin" Value="5"/>
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect ShadowDepth="5" BlurRadius="5" Opacity="{DynamicResource BorderOpacity}" Color="{DynamicResource CBorderColor}"/>
+                    <DropShadowEffect ShadowDepth="2" BlurRadius="10" Opacity="{DynamicResource BorderOpacity}" Color="{DynamicResource CBorderColor}"/>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -18122,7 +17867,7 @@ $inputXML = @'
             </Setter>
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect ShadowDepth="5" BlurRadius="5" Opacity="{DynamicResource BorderOpacity}" Color="{DynamicResource CBorderColor}"/>
+                    <DropShadowEffect ShadowDepth="2" BlurRadius="10" Opacity="{DynamicResource BorderOpacity}" Color="{DynamicResource CBorderColor}"/>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -18152,7 +17897,7 @@ $inputXML = @'
             </Setter>
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect ShadowDepth="5" BlurRadius="5" Opacity="{DynamicResource BorderOpacity}" Color="{DynamicResource CBorderColor}"/>
+                    <DropShadowEffect ShadowDepth="2" BlurRadius="10" Opacity="{DynamicResource BorderOpacity}" Color="{DynamicResource CBorderColor}"/>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -18271,7 +18016,14 @@ $inputXML = @'
             </Setter>
         </Style>
     </Window.Resources>
-    <Grid Background="{DynamicResource MainBackgroundColor}" ShowGridLines="False" Name="WPFMainGrid" Width="Auto" Height="Auto" HorizontalAlignment="Stretch">
+    <Grid ShowGridLines="False" Name="WPFMainGrid" Width="Auto" Height="Auto" HorizontalAlignment="Stretch">
+        <Grid.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="{DynamicResource CMainGradientTopColor}" Offset="0"/>
+                <GradientStop Color="{DynamicResource CMainGradientTopColor}" Offset="0.3"/>
+                <GradientStop Color="{DynamicResource CMainGradientBottomColor}" Offset="1"/>
+            </LinearGradientBrush>
+        </Grid.Background>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -18286,7 +18038,7 @@ $inputXML = @'
             <TextBlock Text="&#x26A0; Offline Mode - No Internet Connection" Foreground="White" FontWeight="Bold"
                 HorizontalAlignment="Center" FontSize="13" Background="Transparent"/>
         </Border>
-        <Grid Grid.Row="1" Background="{DynamicResource MainBackgroundColor}">
+        <Grid Grid.Row="1" Background="Transparent">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/> <!-- Navigation buttons -->
                 <ColumnDefinition Width="*"/> <!-- Search bar and buttons -->
@@ -18294,7 +18046,7 @@ $inputXML = @'
 
             <!-- Navigation Buttons Panel -->
             <StackPanel Name="NavDockPanel" Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center" Margin="5,5,10,5">
-                <StackPanel Name="NavLogoPanel" Orientation="Horizontal" HorizontalAlignment="Left" Background="{DynamicResource MainBackgroundColor}" SnapsToDevicePixels="True" Margin="10,0,20,0">
+                <StackPanel Name="NavLogoPanel" Orientation="Horizontal" HorizontalAlignment="Left" Background="Transparent" SnapsToDevicePixels="True" Margin="10,0,20,0">
                 </StackPanel>
                 <ToggleButton Style="{StaticResource TabToggleButton}" Margin="0,0,5,0" Height="{DynamicResource TabButtonHeight}" Width="{DynamicResource TabButtonWidth}"
                     Background="{DynamicResource ButtonInstallBackgroundColor}" Foreground="white" FontWeight="Bold" Name="WPFTab1BT">
@@ -18339,7 +18091,7 @@ $inputXML = @'
             </StackPanel>
 
             <!-- Search Bar and Action Buttons -->
-            <Grid Name="GridBesideNavDockPanel" Grid.Column="1" Background="{DynamicResource MainBackgroundColor}" ShowGridLines="False" Height="Auto">
+            <Grid Name="GridBesideNavDockPanel" Grid.Column="1" Background="Transparent" ShowGridLines="False" Height="Auto">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="2*"/> <!-- Search bar area - priority space -->
                     <ColumnDefinition Width="Auto"/><!-- Buttons area -->
@@ -18381,7 +18133,7 @@ $inputXML = @'
                     <Button Name="ThemeButton"
                         Style="{StaticResource HoverButtonStyle}"
                         BorderBrush="Transparent"
-                    Background="{DynamicResource MainBackgroundColor}"
+                    Background="Transparent"
                     Foreground="{DynamicResource MainForegroundColor}"
                     FontSize="{DynamicResource SettingsIconFontSize}"
                     Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
@@ -18420,7 +18172,7 @@ $inputXML = @'
                     <Button Name="FontScalingButton"
                         Style="{StaticResource HoverButtonStyle}"
                         BorderBrush="Transparent"
-                    Background="{DynamicResource MainBackgroundColor}"
+                    Background="Transparent"
                     Foreground="{DynamicResource MainForegroundColor}"
                     FontSize="{DynamicResource SettingsIconFontSize}"
                     Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
@@ -18493,7 +18245,7 @@ $inputXML = @'
                     <Button Name="SettingsButton"
                         Style="{StaticResource HoverButtonStyle}"
                         BorderBrush="Transparent"
-                    Background="{DynamicResource MainBackgroundColor}"
+                    Background="Transparent"
                     Foreground="{DynamicResource MainForegroundColor}"
                     FontSize="{DynamicResource SettingsIconFontSize}"
                     Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
@@ -18538,7 +18290,7 @@ $inputXML = @'
                         Style="{StaticResource HoverButtonStyle}"
                         BorderThickness="0"
                         BorderBrush="Transparent"
-                        Background="{DynamicResource MainBackgroundColor}"
+                        Background="Transparent"
                         Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
                         HorizontalAlignment="Right" VerticalAlignment="Center"
                         Margin="0"
@@ -18551,7 +18303,7 @@ $inputXML = @'
                     <Button
                         BorderThickness="0"
                         BorderBrush="Transparent"
-                        Background="{DynamicResource MainBackgroundColor}"
+                        Background="Transparent"
                         Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
                         HorizontalAlignment="Right" VerticalAlignment="Center"
                         Margin="0,0,0,0"
@@ -18580,7 +18332,7 @@ $inputXML = @'
                         Style="{StaticResource HoverButtonStyle}"
                         BorderThickness="0"
                         BorderBrush="Transparent"
-                        Background="{DynamicResource MainBackgroundColor}"
+                        Background="Transparent"
                         Width="{DynamicResource IconButtonSize}" Height="{DynamicResource IconButtonSize}"
                         HorizontalAlignment="Right" VerticalAlignment="Center"
                         Margin="0"
@@ -18655,7 +18407,7 @@ $inputXML = @'
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
-                            <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Vertical" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="5">
+                            <StackPanel Background="Transparent" Orientation="Vertical" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="5">
                                 <Label Content="建議選項：" FontSize="{DynamicResource FontSize}" VerticalAlignment="Center" Margin="2"/>
                                 <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,2,0,0">
                                     <Button Name="WPFstandard" Content=" Standard " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
@@ -18672,7 +18424,7 @@ $inputXML = @'
                             </Grid>
 
                             <Border Grid.ColumnSpan="2" Grid.Row="2" Grid.Column="0" Style="{StaticResource BorderStyle}">
-                                <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Horizontal" HorizontalAlignment="Left">
+                                <StackPanel Background="Transparent" Orientation="Horizontal" HorizontalAlignment="Left">
                                     <TextBlock Padding="10">
                                         注意：將滑鼠移到項目上可看到更詳細的說明。請小心，許多調校會大幅修改你的系統。
                                         <LineBreak/>建議選項適合一般使用者；如果你不確定，請勿勾選其他項目！
@@ -18681,7 +18433,7 @@ $inputXML = @'
                             </Border>
                         </Grid>
                     </ScrollViewer>
-                    <Border Grid.Row="1" Background="{DynamicResource MainBackgroundColor}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="5" HorizontalAlignment="Stretch" Padding="10">
+                    <Border Grid.Row="1" Background="{DynamicResource SurfaceBackgroundColor}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="5" HorizontalAlignment="Stretch" Padding="10">
                         <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Grid.Column="0">
                             <Button Name="WPFTweaksbutton" Content="執行調校" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                             <Button Name="WPFUndoall" Content="復原所選調校" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
@@ -19073,7 +18825,7 @@ $inputXML = @'
                                 </Style>
 
                                 <Style x:Key="Win11InfoPanel" TargetType="Border">
-                                    <Setter Property="Background" Value="{DynamicResource MainBackgroundColor}"/>
+                                    <Setter Property="Background" Value="{DynamicResource SurfaceBackgroundColor}"/>
                                     <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
                                     <Setter Property="BorderThickness" Value="1"/>
                                     <Setter Property="CornerRadius" Value="5"/>
@@ -19456,7 +19208,7 @@ $inputXML = @'
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
-                            <StackPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Vertical" Grid.Row="0" Grid.Column="0" Margin="5">
+                            <StackPanel Background="Transparent" Orientation="Vertical" Grid.Row="0" Grid.Column="0" Margin="5">
                                 <Label Content="選項：" FontSize="{DynamicResource FontSize}" VerticalAlignment="Center" Margin="2"/>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,2,0,0">
                                     <Button Name="WPFDefaultAppxSelection" Content=" Default " Margin="2" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
@@ -19470,7 +19222,7 @@ $inputXML = @'
                             </Grid>
 
                             <Border Grid.Row="2" Style="{StaticResource BorderStyle}" Margin="5,15,5,5">
-                                <WrapPanel Background="{DynamicResource MainBackgroundColor}" Orientation="Horizontal" HorizontalAlignment="Left">
+                                <WrapPanel Background="Transparent" Orientation="Horizontal" HorizontalAlignment="Left">
                                     <TextBlock Padding="10" TextWrapping="Wrap" Foreground="{DynamicResource MainForegroundColor}">
                                         Note: Select the Windows AppX packages you wish to install or remove.
                                         <LineBreak/>'Install Selected' registers a local manifest for the current user when available, then falls back to the Microsoft Store.
@@ -19481,7 +19233,7 @@ $inputXML = @'
                         </Grid>
                     </ScrollViewer>
 
-                    <Border Grid.Row="1" Background="{DynamicResource MainBackgroundColor}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="5" HorizontalAlignment="Stretch" Padding="10">
+                    <Border Grid.Row="1" Background="{DynamicResource SurfaceBackgroundColor}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="5" HorizontalAlignment="Stretch" Padding="10">
                         <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                             <Button Name="WPFBackToTweaks" Content="Back to Tweaks" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
                             <Button Name="WPFInstallSelectedAppx" Content="Install Selected" Margin="5" Width="{DynamicResource ButtonWidth}" Height="{DynamicResource ButtonHeight}"/>
@@ -19493,7 +19245,7 @@ $inputXML = @'
         </TabControl>
 
         <!-- Window-level progress indicator - visible regardless of active tab -->
-        <Border Name="WPFTweaksProgressBar" Grid.Row="3" Background="{DynamicResource MainBackgroundColor}" Visibility="Collapsed" Padding="10,6">
+        <Border Name="WPFTweaksProgressBar" Grid.Row="3" Background="Transparent" Visibility="Collapsed" Padding="10,6">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
