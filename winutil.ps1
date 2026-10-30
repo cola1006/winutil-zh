@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.10.29
+    Version        : 26.10.30
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.10.29"
+$sync.version = "26.10.30"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -252,16 +252,9 @@ $dateTime = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 $winutildir = "$env:LocalAppData\winutil"
 $sync.winutildir = $winutildir
 
-$logdir = "$winutildir\logs"
-# Start-Transcript fails outright when the directory is missing, which is every first run
-if (-not (Test-Path $logdir)) {
-    New-Item -ItemType Directory -Path $logdir -Force | Out-Null
-}
-# Keep console output and structured entries in the path reported to the user. Write-WinUtilLog
-# writes through the host while this transcript owns the file, avoiding competing file handles.
-$sync.logPath = "$logdir\winutil_$dateTime.log"
-$sync.transcriptPath = $sync.logPath
-Start-Transcript -Path $sync.transcriptPath -Append -NoClobber | Out-Null
+# Written by Write-WinUtilLog. Not a transcript, as that only records this runspace and misses
+# everything from the UI thread and the jobs.
+$sync.logPath = "$winutildir\logs\winutil_$dateTime.log"
 
 $Host.UI.RawUI.WindowTitle = "WinUtil"
 Clear-Host
@@ -7466,15 +7459,13 @@ function Start-WinUtilJob {
         try {
             $body = [scriptblock]::Create($JobBody)
 
-            # A worker's warning and error streams buffer on a PowerShell object nobody reads.
-            # Merging them into the output stream is what gets them to the log.
-            & $body @JobParameters 2>&1 3>&1 | ForEach-Object {
+            # A worker's warning, error and Write-Host output buffers on a PowerShell object
+            # nobody reads. Merging it into the output stream is what gets it to the log.
+            & $body @JobParameters 2>&1 3>&1 6>&1 | ForEach-Object {
                 if ($_ -is [System.Management.Automation.WarningRecord]) {
                     $global:WinUtilJobWarningCount++
-                    Write-WinUtilLog -Level "WARN" -Component $JobName -Message $_.Message
-                } elseif ($_ -is [System.Management.Automation.ErrorRecord]) {
-                    Write-WinUtilErrorRecord -ErrorRecord $_ -Component $JobName -Context "Non-terminating error"
                 }
+                Write-WinUtilStreamRecord -Record $_ -Component $JobName
             }
 
             $jobClock.Stop()
@@ -8735,13 +8726,13 @@ function Write-WinUtilConsoleProgress {
     $line = "$prefix$text"
 
     if ($redirected) {
-        Write-Host $line -ForegroundColor DarkCyan
+        Write-WinUtilHost $line -ForegroundColor DarkCyan
         return
     }
 
     # Pad to the previous length so a shorter line does not leave the tail of the longer one
     $padding = [Math]::Max(0, $state.LineLength - $line.Length)
-    Write-Host ("`r$line" + (" " * $padding)) -NoNewline -ForegroundColor DarkCyan
+    Write-WinUtilHost ("`r$line" + (" " * $padding)) -NoNewline -ForegroundColor DarkCyan
     $state.LineLength = $line.Length
     $state.LineOpen = $true
 }
@@ -8761,7 +8752,7 @@ function Complete-WinUtilConsoleProgress {
         return
     }
 
-    Write-Host ""
+    Write-WinUtilHost ""
     $state.LineOpen = $false
     $state.LineLength = 0
     $state.LastText = ""
@@ -8955,7 +8946,7 @@ function Write-WinUtilErrorRecord {
     }
 
     if (-not $DetailOnly) {
-        Write-Host "$Component : $headline" -ForegroundColor Red
+        Write-WinUtilHost "$Component : $headline" -ForegroundColor Red
     }
 }
 
@@ -9006,35 +8997,15 @@ function Write-WinUtilJobBanner {
     $border = "=" * ($longest + 6)
     $colour = if ($Level -eq "ERROR") { "Red" } else { "Cyan" }
 
-    Write-Host ""
-    Write-Host $border -ForegroundColor $colour
+    Write-WinUtilHost ""
+    Write-WinUtilHost $border -ForegroundColor $colour
     foreach ($line in $lines) {
-        Write-Host ("-- {0}$(' ' * ($longest - $line.Length)) --" -f $line) -ForegroundColor $colour
+        Write-WinUtilHost ("-- {0}$(' ' * ($longest - $line.Length)) --" -f $line) -ForegroundColor $colour
     }
-    Write-Host $border -ForegroundColor $colour
+    Write-WinUtilHost $border -ForegroundColor $colour
 }
 
 function Write-WinUtilLog {
-    <#
-
-    .SYNOPSIS
-        Writes a timestamped WinUtil log entry to the active session log.
-
-    .DESCRIPTION
-        Called from the interface thread and from every job body. When Start-Transcript owns the
-        active session log, entries go through the host so the transcript records them without a
-        competing file write. Standalone callers use a named mutex to serialize direct appends.
-
-    .PARAMETER Message
-        The message to write.
-
-    .PARAMETER Level
-        The severity level for the log entry.
-
-    .PARAMETER Component
-        The WinUtil component producing the log entry.
-
-    #>
     param (
         [Parameter(Mandatory = $true)]
         [string]$Message,
@@ -9045,11 +9016,13 @@ function Write-WinUtilLog {
         [string]$Component = "WinUtil",
 
         # Continuation of an error already counted, such as a stack frame
-        [switch]$Detail
+        [switch]$Detail,
+
+        [switch]$FileOnly
     )
 
     # UI performance diagnostics are useful to developers but are too noisy for the release
-    # transcript. Compile.ps1 stamps local builds so DEBUG output cannot leak into CI artifacts.
+    # log. Compile.ps1 stamps local builds so DEBUG output cannot leak into CI artifacts.
     if ($Level -eq "DEBUG" -and ($null -eq $sync -or -not $sync.IsLocalCompile)) {
         return
     }
@@ -9065,78 +9038,187 @@ function Write-WinUtilLog {
         $global:WinUtilJobErrorCount++
     }
 
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    $line = "[$timestamp] [$Level] [$Component] $Message"
+
     try {
-        $logPath = $null
-        $transcriptPath = $null
-        if ($null -ne $sync -and $sync.ContainsKey("logPath")) {
-            $logPath = $sync.logPath
-        }
-
-        if ($null -ne $sync -and $sync.ContainsKey("transcriptPath")) {
-            $transcriptPath = $sync.transcriptPath
-        }
-
-        if ([string]::IsNullOrWhiteSpace($logPath) -and -not [string]::IsNullOrWhiteSpace($transcriptPath)) {
-            $logPath = $transcriptPath
-        }
-
-        if ([string]::IsNullOrWhiteSpace($logPath) -and $null -ne $sync -and $sync.ContainsKey("winutildir")) {
-            $logDirectory = Join-Path $sync.winutildir "logs"
-            $logPath = Join-Path $logDirectory "winutil_$(Get-Date -Format "yyyy-MM-dd_HH-mm-ss").log"
-            $sync.logPath = $logPath
-        }
-
-        if ([string]::IsNullOrWhiteSpace($logPath) -and -not [string]::IsNullOrWhiteSpace($env:LocalAppData)) {
-            if ([string]::IsNullOrWhiteSpace($script:WinUtilLogPath)) {
-                $logDirectory = Join-Path (Join-Path $env:LocalAppData "winutil") "logs"
-                $script:WinUtilLogPath = Join-Path $logDirectory "winutil_$(Get-Date -Format "yyyy-MM-dd_HH-mm-ss").log"
+        $writer = Get-WinUtilLogWriter
+        if ($null -ne $writer) {
+            [System.Threading.Monitor]::Enter($writer)
+            try {
+                $writer.WriteLine($line)
+            } finally {
+                [System.Threading.Monitor]::Exit($writer)
             }
-            $logPath = $script:WinUtilLogPath
+        }
+    } catch [System.IO.IOException] {
+        Write-Verbose "Unable to write WinUtil log entry: $($_.Exception.Message)"
+    } catch {
+        Write-Warning "Unable to write WinUtil log entry: $($_.Exception.Message)"
+    }
+
+    if (-not $FileOnly) {
+        Write-WinUtilHost $line
+    }
+}
+
+# Opens the session log once for every runspace to share. Others can still read it, e.g. the environment report.
+function Get-WinUtilLogWriter {
+    $state = $sync
+    if ($null -eq $state) {
+        if ([string]::IsNullOrWhiteSpace($env:LocalAppData)) {
+            return $null
+        }
+        if ($null -eq $script:WinUtilLogState) {
+            $script:WinUtilLogState = [hashtable]::Synchronized(@{
+                winutildir = Join-Path $env:LocalAppData "winutil"
+            })
+        }
+        $state = $script:WinUtilLogState
+    }
+
+    $writer = $state.LogWriter
+    if ($null -ne $writer -and $state.LogWriterPath -eq $state.logPath) {
+        return $writer
+    }
+
+    [System.Threading.Monitor]::Enter($state.SyncRoot)
+    try {
+        if ([string]::IsNullOrWhiteSpace($state.logPath)) {
+            if ([string]::IsNullOrWhiteSpace($state.winutildir)) {
+                return $null
+            }
+            $state.logPath = Join-Path (Join-Path $state.winutildir "logs") "winutil_$(Get-Date -Format "yyyy-MM-dd_HH-mm-ss").log"
         }
 
-        if ([string]::IsNullOrWhiteSpace($logPath)) {
-            return
+        if ($null -ne $state.LogWriter -and $state.LogWriterPath -eq $state.logPath) {
+            return $state.LogWriter
         }
 
-        $logDirectory = Split-Path -Path $logPath -Parent
-        if (-not (Test-Path $logDirectory)) {
+        if ($null -ne $state.LogWriter) {
+            $state.LogWriter.Dispose()
+            $state.LogWriter = $null
+        }
+
+        $logDirectory = Split-Path -Path $state.logPath -Parent
+        if (-not (Test-Path -LiteralPath $logDirectory)) {
             New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
         }
 
-        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
-        $line = "[$timestamp] [$Level] [$Component] $Message"
+        $stream = [System.IO.FileStream]::new(
+            $state.logPath,
+            [System.IO.FileMode]::Append,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::Read)
+        $newWriter = [System.IO.StreamWriter]::new($stream, [System.Text.UTF8Encoding]::new($true))
+        $newWriter.AutoFlush = $true
 
-        if (-not [string]::IsNullOrWhiteSpace($transcriptPath) -and $logPath -eq $transcriptPath) {
-            Write-Host $line
-            return
+        $state.LogWriterPath = $state.logPath
+        $state.LogWriter = $newWriter
+        return $newWriter
+    } finally {
+        [System.Threading.Monitor]::Exit($state.SyncRoot)
+    }
+}
+
+# Lets go of the log file when WinUtil exits, so the terminal it ran in doesn't keep it locked
+function Close-WinUtilLog {
+    $state = if ($null -ne $sync) { $sync } else { $script:WinUtilLogState }
+    if ($null -eq $state -or $null -eq $state.LogWriter) {
+        return
+    }
+
+    $writer = $state.LogWriter
+    [System.Threading.Monitor]::Enter($writer)
+    try {
+        $state.LogWriter = $null
+        $state.LogWriterPath = $null
+        $writer.Dispose()
+    } finally {
+        [System.Threading.Monitor]::Exit($writer)
+    }
+}
+
+# Console-only output like banners and progress. Unlike Write-Host, a job won't log it.
+function Write-WinUtilHost {
+    param(
+        [string]$Object = "",
+        [Nullable[System.ConsoleColor]]$ForegroundColor,
+        [Nullable[System.ConsoleColor]]$BackgroundColor,
+        [switch]$NoNewline
+    )
+
+    $rawUI = $Host.UI.RawUI
+    if ($null -eq $rawUI -or ($null -eq $ForegroundColor -and $null -eq $BackgroundColor)) {
+        if ($NoNewline) {
+            $Host.UI.Write($Object)
+        } else {
+            $Host.UI.WriteLine($Object)
+        }
+        return
+    }
+
+    $foreground = if ($null -ne $ForegroundColor) { $ForegroundColor } else { $rawUI.ForegroundColor }
+    $background = if ($null -ne $BackgroundColor) { $BackgroundColor } else { $rawUI.BackgroundColor }
+
+    if ($NoNewline) {
+        $Host.UI.Write($foreground, $background, $Object)
+    } else {
+        $Host.UI.WriteLine($foreground, $background, $Object)
+    }
+}
+
+# Logs a warning, error or Write-Host record from another runspace, and shows it too unless -Shown says it already was
+function Write-WinUtilStreamRecord {
+    param(
+        [Parameter(Mandatory)]
+        $Record,
+
+        [string]$Component = "WinUtil",
+
+        [switch]$Shown
+    )
+
+    if ($Record -is [System.Management.Automation.WarningRecord]) {
+        Write-WinUtilLog -Level "WARN" -Component $Component -Message $Record.Message -FileOnly:$Shown
+    } elseif ($Record -is [System.Management.Automation.ErrorRecord]) {
+        Write-WinUtilErrorRecord -ErrorRecord $Record -Component $Component -Context "Non-terminating error"
+    } elseif ($Record -is [System.Management.Automation.InformationRecord]) {
+        $message = $Record.MessageData
+
+        if (-not $Shown -and $message -is [System.Management.Automation.HostInformationMessage]) {
+            Write-WinUtilHost -Object $message.Message -ForegroundColor $message.ForegroundColor `
+                -BackgroundColor $message.BackgroundColor -NoNewline:([bool]$message.NoNewLine)
         }
 
-        $mutex = [System.Threading.Mutex]::new($false, "WinUtilSessionLog")
-        $held = $false
-        try {
-            try {
-                $held = $mutex.WaitOne(2000)
-            } catch [System.Threading.AbandonedMutexException] {
-                # A thread died holding the mutex; ownership transfers to us either way
-                $held = $true
-            }
+        $text = "$message".TrimEnd()
+        if ($text) {
+            Write-WinUtilLog -Component $Component -Message $text -FileOnly
+        }
+    }
+}
 
-            if (-not $held) {
-                # Writing anyway is what interleaves lines, and the wait only times out when
-                # contention is at its worst
-                Write-Host $line
-                return
-            }
+# Logs and clears a runspace's warnings, errors and Write-Host output. Never throws, as the main thread runs it.
+function Receive-WinUtilStreamOutput {
+    param(
+        [Parameter(Mandatory)]
+        $PowerShell,
 
-            Add-Content -Path $logPath -Value $line -Encoding UTF8 -ErrorAction Stop
-        } catch [System.IO.IOException] {
-            Write-Host $line
-        } finally {
-            if ($held) { $mutex.ReleaseMutex() }
-            $mutex.Dispose()
+        [string]$Component = "WinUtil"
+    )
+
+    try {
+        foreach ($record in $PowerShell.Streams.Information.ReadAll()) {
+            Write-WinUtilStreamRecord -Record $record -Component $Component -Shown
+        }
+        foreach ($record in $PowerShell.Streams.Warning.ReadAll()) {
+            Write-WinUtilStreamRecord -Record $record -Component $Component -Shown
+        }
+        foreach ($record in $PowerShell.Streams.Error.ReadAll()) {
+            Write-WinUtilStreamRecord -Record $record -Component $Component
         }
     } catch {
-        Write-Warning "Unable to write WinUtil log entry: $($_.Exception.Message)"
+        Write-Warning "Unable to log $Component output: $($_.Exception.Message)"
     }
 }
 
@@ -19827,6 +19909,8 @@ CCC::::::::::::C         T:::::::::T            T:::::::::T
 =====Windows Toolbox=====
 "@
 
+Write-WinUtilLog -Message "WinUtil $($sync.version) on PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition)), $([Environment]::OSVersion.VersionString), process $PID."
+
 # Load the configuration files
 
 $sync.configs.applicationsHashtable = @{}
@@ -19902,7 +19986,7 @@ if ($Preset -or $Config) {
         Close-WinUtilRunspacePool
         [System.GC]::Collect()
         Remove-WinUtilTempScript
-        Stop-Transcript | Out-Null
+        Close-WinUtilLog
     }
 
     # An isolated elevated child and an explicit file launch own their process. The documented
@@ -19939,7 +20023,10 @@ $uiHandle = $uiShell.BeginInvoke()
 # leaving it to the thread that is building the window
 Start-WinUtilAssetRendering | Out-Null
 
-$uiHandle.AsyncWaitHandle.WaitOne() | Out-Null
+# Log the UI thread's Write-Host output, warnings and errors while the window is open
+while (-not $uiHandle.AsyncWaitHandle.WaitOne(250)) {
+    Receive-WinUtilStreamOutput -PowerShell $uiShell -Component "UI"
+}
 
 $uiFailed = $false
 try {
@@ -19949,13 +20036,7 @@ try {
     Write-WinUtilErrorRecord -ErrorRecord $_ -Component "UI" -Context "Interface thread stopped"
 }
 
-foreach ($uiWarning in $uiShell.Streams.Warning) {
-    Write-WinUtilLog -Level "WARN" -Component "UI" -Message $uiWarning.Message
-}
-
-foreach ($uiError in $uiShell.Streams.Error) {
-    Write-WinUtilErrorRecord -ErrorRecord $uiError -Component "UI" -Context "Interface thread"
-}
+Receive-WinUtilStreamOutput -PowerShell $uiShell -Component "UI"
 
 $uiShell.Dispose()
 $sync.UIRunspace.Dispose()
@@ -19970,7 +20051,7 @@ Close-WinUtilRunspacePool
 
 Remove-WinUtilTempScript
 Write-Host "Bye bye!" -ForegroundColor Cyan
-Stop-Transcript
+Close-WinUtilLog
 
 if ($uiFailed) {
     $global:LASTEXITCODE = 1
