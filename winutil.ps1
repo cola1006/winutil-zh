@@ -5578,6 +5578,10 @@ function Invoke-WinUtilTweaks {
                     $service = Get-Service -Name $serviceName -ErrorAction Stop
                     if(!($service.StartType.ToString() -eq $expectedType)) {
                         $changeservice = $false
+                        # Say so, or the log reads as if the tweak changed a service it left alone
+                        $skipMessage = "Service $serviceName startup type is $($service.StartType), not $expectedType as this tweak expects; leaving it unchanged."
+                        Write-Warning $skipMessage
+                        Write-WinUtilLog -Level "WARN" -Component "Service" -Message $skipMessage
                     }
                 } catch {
                     if ($_.FullyQualifiedErrorId -like "NoServiceFoundForGivenName,*") {
@@ -7700,6 +7704,7 @@ function Start-WinUtilUserInterface {
                 [ref]$handled
             )
             $null = $hwnd, $wParam, $lParam
+            if ($msg -eq 0x001A) { Request-WinUtilWindowInsets }
             # Check for the Event WM_SETTINGCHANGE (0x1001A) and validate that Button shows the icon for "Auto" => [char]0xF08C
             if (($msg -eq 0x001A) -and $sync.ThemeButton.Content -eq [char]0xF08C) {
                 $currentTime = [datetime]::Now
@@ -7729,6 +7734,17 @@ function Start-WinUtilUserInterface {
     Measure-WinUtilStep -Scope "UI" -Name "map named controls" -ScriptBlock {
         $xaml.SelectNodes("//*[@Name]") | ForEach-Object {$sync["$("$($psitem.Name)")"] = $sync["Form"].FindName($psitem.Name)}
     }
+
+    $sync.WindowInsetsPending = $false
+    $sync.WindowInsetsUpdate = [action]{
+        $sync.WindowInsetsPending = $false
+        if (Test-WinUtilUIAlive) { Update-WinUtilWindowInsets }
+    }
+    $sync.Form.Add_Loaded({ Request-WinUtilWindowInsets })
+    $sync.Form.Add_StateChanged({ Request-WinUtilWindowInsets })
+    $sync.Form.Add_SizeChanged({ Request-WinUtilWindowInsets })
+    $sync.Form.Add_LocationChanged({ Request-WinUtilWindowInsets })
+    $sync.Form.Add_DpiChanged({ Request-WinUtilWindowInsets })
 
     # Built here so it carries this runspace's session state: posted work then runs as ordinary
     # interface code, not a much slower cross-runspace nested pipeline. Invoke-WPFUIThread is the
@@ -8664,6 +8680,76 @@ function Update-WinUtilSelections {
             }
         }
     }
+}
+
+function Update-WinUtilWindowInsets {
+    <#
+    .SYNOPSIS
+        Keeps maximized client content inside the current monitor's work area.
+    #>
+    if (-not $sync.Form -or -not $sync.WPFMainGrid) { return }
+    if ($sync.Form.WindowState -ne 'Maximized') {
+        $sync.WPFMainGrid.Margin = [Windows.Thickness]::new(0)
+        return
+    }
+
+    if (-not ('WinUtil.WindowBounds' -as [type])) {
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+namespace WinUtil {
+    public static class WindowBounds {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Rect { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MonitorInfo {
+            public int Size;
+            public Rect Monitor, Work;
+            public uint Flags;
+        }
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+        [DllImport("user32.dll")]
+        public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+    }
+}
+"@
+    }
+
+    $handle = [Windows.Interop.WindowInteropHelper]::new($sync.Form).Handle
+    $source = [Windows.Interop.HwndSource]::FromHwnd($handle)
+    if (-not $source -or -not $source.CompositionTarget) { return }
+    $bounds = [WinUtil.WindowBounds+Rect]::new()
+    $monitor = [WinUtil.WindowBounds+MonitorInfo]::new()
+    $monitor.Size = [Runtime.InteropServices.Marshal]::SizeOf($monitor)
+    $monitorHandle = [WinUtil.WindowBounds]::MonitorFromWindow($handle, 2)
+    if (-not [WinUtil.WindowBounds]::GetWindowRect($handle, [ref]$bounds) -or
+        -not [WinUtil.WindowBounds]::GetMonitorInfo($monitorHandle, [ref]$monitor)) { return }
+
+    $sync.WPFMainGrid.Margin = Get-WinUtilWindowInsets -Bounds $bounds -WorkArea $monitor.Work -FromDevice $source.CompositionTarget.TransformFromDevice
+}
+
+function Get-WinUtilWindowInsets {
+    param($Bounds, $WorkArea, $FromDevice)
+    # Measure the actual overhang, including the padded border; twice the resize
+    # frame is only correct at some DPI settings. Convert physical pixels to WPF DIPs.
+    $topLeft = $FromDevice.Transform([Windows.Vector]::new(
+        [Math]::Max(0, $WorkArea.Left - $Bounds.Left),
+        [Math]::Max(0, $WorkArea.Top - $Bounds.Top)))
+    $bottomRight = $FromDevice.Transform([Windows.Vector]::new(
+        [Math]::Max(0, $Bounds.Right - $WorkArea.Right),
+        [Math]::Max(0, $Bounds.Bottom - $WorkArea.Bottom)))
+    return [Windows.Thickness]::new($topLeft.X, $topLeft.Y, $bottomRight.X, $bottomRight.Y)
+}
+
+function Request-WinUtilWindowInsets {
+    # Events can arrive before WPF has processed the native size/DPI change.
+    # Coalesce them and read the final HWND geometry on the interface dispatcher.
+    if ($sync.WindowInsetsPending -or -not (Test-WinUtilUIAlive)) { return }
+    $sync.WindowInsetsPending = $true
+    [void]$sync.Form.Dispatcher.BeginInvoke([Windows.Threading.DispatcherPriority]::Loaded, $sync.WindowInsetsUpdate)
 }
 
 function Write-WinUtilConsoleProgress {
@@ -15968,7 +16054,7 @@ $sync.configs.tweaks = @'
     "category": "必要調校",
     "panel": "1",
     "InvokeScript": [
-      "Disable-BitLocker -MountPoint $Env:SystemDrive"
+      "\n      $bitLockerVolume = Get-BitLockerVolume -MountPoint $Env:SystemDrive -ErrorAction Stop\n\n      if ($bitLockerVolume.VolumeStatus -eq 'FullyDecrypted') {\n          Write-Host \"BitLocker is already disabled on $($Env:SystemDrive).\"\n      } else {\n          Disable-BitLocker -MountPoint $Env:SystemDrive -ErrorAction Stop\n      }\n      "
     ],
     "UndoScript": [
       "Enable-BitLocker -MountPoint $Env:SystemDrive"
@@ -16390,6 +16476,26 @@ $sync.configs.tweaks = @'
       "netsh interface teredo set state default"
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/teredo"
+  },
+  "WPFTweaksDisableSearchIndexing": {
+    "Content": "Windows Search Indexing - Disable",
+    "Description": "Stops and disables the Windows Search service (WSearch) to cut background disk activity, mainly useful on mechanical hard drives. Warning: file searches in Explorer and the Start menu become much slower because Windows no longer maintains a search index. Undo restores the service and starts it again.",
+    "category": "z__進階調校 - 注意",
+    "panel": "1",
+    "service": [
+      {
+        "Name": "WSearch",
+        "StartupType": "Disabled",
+        "OriginalType": "Automatic"
+      }
+    ],
+    "InvokeScript": [
+      "$search = Get-Service -Name WSearch -ErrorAction SilentlyContinue\n      if ($search -and $search.StartType -eq 'Disabled' -and $search.Status -ne 'Stopped') {\n        Stop-Service -Name WSearch -Force -ErrorAction Stop\n      }"
+    ],
+    "UndoScript": [
+      "$search = Get-Service -Name WSearch -ErrorAction SilentlyContinue\n      if ($search -and $search.StartType -eq 'Automatic' -and $search.Status -ne 'Running') {\n        Start-Service -Name WSearch -ErrorAction Stop\n      }"
+    ],
+    "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/disablesearchindexing"
   },
   "WPFTweaksDisableIPv6": {
     "Content": "IPv6 - 停用",
