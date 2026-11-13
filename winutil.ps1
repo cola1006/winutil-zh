@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.11.12
+    Version        : 26.11.13
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.11.12"
+$sync.version = "26.11.13"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -16767,7 +16767,7 @@ $sync.configs.tweaks = @'
         "Path": "HKCU:\\Software\\Microsoft\\Siuf\\Rules",
         "Name": "PeriodInNanoSeconds",
         "Value": "<RemoveEntry>",
-        "Type": "DWord",
+        "Type": "QWord",
         "OriginalValue": "<RemoveEntry>"
       }
     ],
