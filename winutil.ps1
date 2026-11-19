@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.11.18
+    Version        : 26.11.19
 #>
 
 param (
@@ -224,7 +224,7 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
-$sync.version = "26.11.18"
+$sync.version = "26.11.19"
 $sync.IsLocalCompile = "false" -eq "true"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
@@ -1759,10 +1759,11 @@ function Initialize-InstallAppEntries {
 <Border Style="{DynamicResource AppEntryBorderStyle}" Tag="$key" ToolTip="$tooltip" AutomationProperties.Name="$name"><Grid><CheckBox x:Name="$id" Tag="$key" Style="{DynamicResource AppEntryCheckboxStyle}" AutomationProperties.Name="$name"><StackPanel Orientation="Horizontal" VerticalAlignment="Center"><Border Style="{DynamicResource AppEntryIconPlateStyle}"><Grid><TextBlock Style="{DynamicResource AppEntryIconLetterStyle}" Text="$letter"$letterVisibility/><Image x:Name="Icon_$id" Style="{DynamicResource AppEntryIconStyle}"/></Grid></Border><TextBlock Style="{DynamicResource AppEntryNameStyle}" Text="$name"/></StackPanel></CheckBox>
 "@)
 
-        # Marks FOSS apps with a corner badge, bled into the border padding so it sits on the edge.
+        # Keep the corner badge inside the card's layout bounds to avoid clipping.
+        # The Viewbox scales the artwork, so leave its own dimensions unrounded at fractional DPI.
         # The same artwork as New-WinUtilFossBadge, written out so it is parsed with the rest.
         if ($app.foss -eq $true) {
-            [void]$document.Append('<Viewbox Width="24" Height="24" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-4,-6,0" ToolTip="Free and Open Source Software"><Grid Width="22" Height="22"><Path Fill="#138F53" Data="M 0,0 L 17,0 A 5,5 0 0 1 22,5 L 22,22 Z"/><Path Stroke="#F7F7F7" StrokeThickness="2.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M 13.61,9.225 A 3.4,3.4 0 1 1 17.51,9.225"/></Grid></Viewbox>')
+            [void]$document.Append('<Viewbox Width="24" Height="24" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,1,1,0" UseLayoutRounding="False" ToolTip="Free and Open Source Software"><Grid Width="22" Height="22"><Path Fill="#138F53" Data="M 0,0 L 17,0 A 5,5 0 0 1 22,5 L 22,22 Z"/><Path Stroke="#F7F7F7" StrokeThickness="2.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M 13.61,9.225 A 3.4,3.4 0 1 1 17.51,9.225"/></Grid></Viewbox>')
         }
         [void]$document.Append('</Grid></Border>')
     }
@@ -2957,14 +2958,18 @@ function Invoke-WinUtilCloseRequest {
     $queuedNote = if ($QueuedCount -gt 0) { "`n$QueuedCount queued operation(s) will be discarded.`n" } else { "" }
 
     # The question carries the meaning rather than naming buttons: Windows labels them in its own
-    # language, so "Yes" in the text would not match a button reading "Ja".
+    # language, so "Yes" in the text would not match a button reading "Ja". The stated minute
+    # bound is Wait-WinUtilRemainingWork's default, so a user who chooses to wait knows when the
+    # stop is requested anyway.
     $answer = Show-WinUtilJobCloseMessage -Button "YesNoCancel" -Icon "Warning" -Title "$RunningJob is still running" -Message @"
 $RunningJob has not finished yet.
 $queuedNote
 Close the window and let it finish in the console?
 
-WinUtil will exit on its own once it is done. If you do not, it will be
-stopped and everything closes now. Cancel keeps WinUtil open.
+WinUtil will exit on its own when the job is done. It waits up to 120
+minutes, then requests that the job stop and exits. If you choose not to
+wait, WinUtil requests a stop and closes now. An installer already running
+may continue until it returns. Cancel keeps WinUtil open.
 "@
 
     switch ("$answer") {
@@ -6501,6 +6506,86 @@ function Set-WinUtilAppCategoryFilter {
 
     Update-WinUtilAppCategoryChip
     Find-AppsByNameOrDescription -SearchString $sync.SearchBar.Text -Categories $selected.ToArray()
+}
+
+function Set-WinUtilClassicContextMenu {
+    param([switch]$Undo)
+
+    $clsidPath = 'HKCU:\Software\Classes\CLSID'
+    $legacyPath = "$clsidPath\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}"
+    $workaroundPath = "$clsidPath\{51668040-5e31-4023-bbe3-149163bd80f1}"
+    $serverPath = "$workaroundPath\InprocServer32"
+    $markerName = 'WinUtilClassicContextMenu'
+
+    $workaroundKey = $null
+    try {
+        $workaroundKey = Get-Item -LiteralPath $workaroundPath -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        # The newer registration is optional.
+    }
+    $marker = if ($null -ne $workaroundKey) { $workaroundKey.GetValue($markerName) }
+    $ownsWorkaround = $marker -is [int] -and $marker -eq 1
+
+    if ($Undo) {
+        # Older WinUtil builds applied the original override without an ownership marker.
+        try {
+            Remove-Item -LiteralPath $legacyPath -Recurse -Force -ErrorAction Stop
+        } catch [System.Management.Automation.ItemNotFoundException] {
+            # The original override is already absent.
+        }
+
+        if ($ownsWorkaround) {
+            try {
+                if ($workaroundKey.ValueCount -gt 1 -or
+                    ($workaroundKey.GetSubKeyNames() | Where-Object { $_ -ne 'InprocServer32' })) {
+                    throw "The classic context menu registry key '$workaroundPath' has additional entries and was left intact."
+                }
+                if ($workaroundKey.SubKeyCount -gt 0) {
+                    $serverKey = Get-Item -LiteralPath $serverPath -ErrorAction Stop
+                    if ($serverKey.SubKeyCount -gt 0 -or $serverKey.ValueCount -gt 1 -or
+                        ($serverKey.ValueCount -eq 1 -and
+                            ($serverKey.GetValueNames() -notcontains '' -or
+                             $serverKey.GetValueKind('') -ne [Microsoft.Win32.RegistryValueKind]::String -or
+                             $serverKey.GetValue('') -ne ''))) {
+                        throw "The classic context menu registry key '$serverPath' has been changed and was left intact."
+                    }
+                }
+                Remove-Item -LiteralPath $workaroundPath -Recurse -Force -ErrorAction Stop
+            } catch [System.Management.Automation.ItemNotFoundException] {
+                # The key disappeared before cleanup completed.
+            }
+        }
+    } else {
+        New-Item -Path $legacyPath -Name InprocServer32 -Value '' -Force -ErrorAction Stop | Out-Null
+
+        if ($null -eq $workaroundKey) {
+            # The first override ensures the CLSID parent exists, so -Force is unnecessary.
+            $workaroundKey = New-Item -Path $workaroundPath -ErrorAction Stop
+            try {
+                New-ItemProperty -LiteralPath $workaroundPath -Name $markerName -Value 1 -PropertyType DWord -ErrorAction Stop | Out-Null
+            } catch {
+                if ($workaroundKey.ValueCount -eq 0 -and $workaroundKey.SubKeyCount -eq 0) {
+                    Remove-Item -LiteralPath $workaroundPath -ErrorAction Stop
+                }
+                throw
+            }
+            $ownsWorkaround = $true
+        }
+        if ($ownsWorkaround -and -not (Test-Path -LiteralPath $serverPath -ErrorAction Stop)) {
+            New-Item -Path $serverPath -Value '' -ErrorAction Stop | Out-Null
+        } elseif ($ownsWorkaround) {
+            $serverKey = Get-Item -LiteralPath $serverPath -ErrorAction Stop
+            if ($serverKey.ValueCount -eq 0 -and $serverKey.SubKeyCount -eq 0) {
+                # Key creation can succeed before assigning its default value fails.
+                Set-Item -LiteralPath $serverPath -Value '' -Force -ErrorAction Stop
+            }
+        }
+    }
+
+    $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    Get-Process -Name explorer -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $sessionId } |
+        ForEach-Object { Stop-Process -Id $_.Id -ErrorAction SilentlyContinue }
 }
 
 function Set-WinUtilDNS {
@@ -17168,14 +17253,14 @@ $sync.configs.tweaks = @'
   },
   "WPFTweaksRightClickMenu": {
     "Content": "右鍵選單舊版配置 - 啟用",
-    "Description": "在 File Explorer 中按右鍵時還原傳統的右鍵選單，取代 Windows 11 的簡化版本。",
+    "Description": "Attempts to restore the classic Windows 11 File Explorer context menu on newer builds. Compatibility may vary.",
     "category": "z__進階調校 - 注意",
     "panel": "1",
     "InvokeScript": [
-      "\n      New-Item -Path \"HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\" -Name InprocServer32 -Value \"\" -Force\n      Stop-Process -Name explorer\n      "
+      "Set-WinUtilClassicContextMenu"
     ],
     "UndoScript": [
-      "Remove-Item -Path \"HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\" -Recurse"
+      "Set-WinUtilClassicContextMenu -Undo"
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/z--advanced-tweaks---caution/rightclickmenu"
   },
@@ -17301,10 +17386,10 @@ $sync.configs.tweaks = @'
     "category": "必要調校",
     "panel": "1",
     "InvokeScript": [
-      "\n      # Previously detected folders\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\n\n      # Folder types lookup table\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\n\n      # Flush Explorer view database\n      Remove-Item -Path $bags -Recurse -Force\n      Write-Host \"Removed $bags\"\n\n      Remove-Item -Path $bagMRU -Recurse -Force\n      Write-Host \"Removed $bagMRU\"\n\n      # Every folder\n      $allFolders = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\\AllFolders\\Shell\"\n\n      if (!(Test-Path $allFolders)) {\n        New-Item -Path $allFolders -Force\n        Write-Host \"Created $allFolders\"\n      }\n\n      # Generic view\n      New-ItemProperty -Path $allFolders -Name \"FolderType\" -Value \"NotSpecified\" -PropertyType String -Force\n      Write-Host \"Set FolderType to NotSpecified\"\n\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\n      "
+      "\n      # Previously detected folders\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\n\n      # Folder types lookup table\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\n\n      # Flush Explorer view database. Explorer creates these keys only after a folder\n      # view has been saved, so skip them when missing or already removed\n      if (Test-Path $bags) {\n        Remove-Item -Path $bags -Recurse -Force\n        Write-Host \"Removed $bags\"\n      }\n\n      if (Test-Path $bagMRU) {\n        Remove-Item -Path $bagMRU -Recurse -Force\n        Write-Host \"Removed $bagMRU\"\n      }\n\n      # Every folder\n      $allFolders = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\\AllFolders\\Shell\"\n\n      if (!(Test-Path $allFolders)) {\n        New-Item -Path $allFolders -Force\n        Write-Host \"Created $allFolders\"\n      }\n\n      # Generic view\n      New-ItemProperty -Path $allFolders -Name \"FolderType\" -Value \"NotSpecified\" -PropertyType String -Force\n      Write-Host \"Set FolderType to NotSpecified\"\n\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\n      "
     ],
     "UndoScript": [
-      "\n      # Previously detected folders\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\n\n      # Folder types lookup table\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\n\n      # Flush Explorer view database\n      Remove-Item -Path $bags -Recurse -Force\n      Write-Host \"Removed $bags\"\n\n      Remove-Item -Path $bagMRU -Recurse -Force\n      Write-Host \"Removed $bagMRU\"\n\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\n      "
+      "\n      # Previously detected folders\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\n\n      # Folder types lookup table\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\n\n      # Flush Explorer view database. Explorer creates these keys only after a folder\n      # view has been saved, so skip them when missing or already removed\n      if (Test-Path $bags) {\n        Remove-Item -Path $bags -Recurse -Force\n        Write-Host \"Removed $bags\"\n      }\n\n      if (Test-Path $bagMRU) {\n        Remove-Item -Path $bagMRU -Recurse -Force\n        Write-Host \"Removed $bagMRU\"\n      }\n\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\n      "
     ],
     "link": "https://winutil.christitus.com/code-reference/tweaks/essential-tweaks/disableexplorerautodiscovery"
   },
@@ -18260,7 +18345,6 @@ $inputXML = @'
         <Setter Property="BorderBrush" Value="Gray"/>
         <Setter Property="BorderThickness" Value="{DynamicResource AppEntryBorderThickness}"/>
         <Setter Property="CornerRadius" Value="5"/>
-        <Setter Property="Padding" Value="7,5"/>
         <Setter Property="Width" Value="{DynamicResource AppEntryCardWidth}"/>
         <Setter Property="VerticalAlignment" Value="Top"/>
         <Setter Property="Margin" Value="{DynamicResource AppEntryMargin}"/>
@@ -18282,6 +18366,7 @@ $inputXML = @'
             <Setter.Value>
                 <ControlTemplate TargetType="CheckBox">
                     <ContentPresenter Content="{TemplateBinding Content}"
+                                      Margin="7,5"
                                       VerticalAlignment="Center"
                                       HorizontalAlignment="Left"/>
                 </ControlTemplate>
@@ -20975,6 +21060,36 @@ $scripts = @(
     };
     {
         reg.exe add "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" /ve /f;
+        $createdClassicMenuKey = $null;
+        try {
+            $classicMenuPath = 'HKCU:\Software\Classes\CLSID\{51668040-5e31-4023-bbe3-149163bd80f1}';
+            if (-not (Test-Path -LiteralPath $classicMenuPath -ErrorAction Stop)) {
+                $createdClassicMenuKey = New-Item -Path $classicMenuPath -ErrorAction Stop;
+                New-ItemProperty -LiteralPath $classicMenuPath -Name 'WinUtilClassicContextMenu' -Value 1 -PropertyType DWord -ErrorAction Stop | Out-Null;
+            };
+            $classicMenuKey = Get-Item -LiteralPath $classicMenuPath -ErrorAction Stop;
+            $classicMenuMarker = $classicMenuKey.GetValue('WinUtilClassicContextMenu');
+            if ($classicMenuMarker -is [int] -and $classicMenuMarker -eq 1) {
+                $classicMenuServer = "$classicMenuPath\InprocServer32";
+                if (-not (Test-Path -LiteralPath $classicMenuServer -ErrorAction Stop)) {
+                    New-Item -Path $classicMenuServer -Value '' -ErrorAction Stop | Out-Null;
+                } else {
+                    $classicMenuServerKey = Get-Item -LiteralPath $classicMenuServer -ErrorAction Stop;
+                    if ($classicMenuServerKey.ValueCount -eq 0 -and $classicMenuServerKey.SubKeyCount -eq 0) {
+                        Set-Item -LiteralPath $classicMenuServer -Value '' -Force -ErrorAction Stop;
+                    };
+                };
+            };
+        } catch {
+            Write-Warning "Could not apply the newer classic context menu workaround: $($_.Exception.Message)";
+            if ($null -ne $createdClassicMenuKey -and $createdClassicMenuKey.ValueCount -eq 0 -and $createdClassicMenuKey.SubKeyCount -eq 0) {
+                try {
+                    Remove-Item -LiteralPath $classicMenuPath -ErrorAction Stop;
+                } catch {
+                    Write-Warning "Could not remove the empty classic context menu key: $($_.Exception.Message)";
+                };
+            };
+        };
     };
     {
         Set-ItemProperty -LiteralPath 'Registry::HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name 'LaunchTo' -Type 'DWord' -Value 1;
